@@ -63,6 +63,10 @@ class IntegrationManager:
         payload = self.oauth.exchange_code(provider_id, code)
         self.tokens.apply(integration, payload)
         integration.metadata_json = {k: v for k, v in (integration.metadata_json or {}).items() if k != "oauth_state"}
+        try:
+            self.sync_service.sync(integration)
+        except Exception as exc:
+            integration.metadata_json = {**(integration.metadata_json or {}), "last_sync_error": str(exc)}
         AuditService(self.db).record(user_id=integration.user_id, action="integration_connected", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id}, commit=False)
         self.db.commit()
         self.db.refresh(integration)

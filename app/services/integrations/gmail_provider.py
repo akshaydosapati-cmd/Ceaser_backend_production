@@ -19,20 +19,28 @@ class GmailProvider(BaseIntegrationProvider):
     def get_metadata(self, integration: Integration | None) -> dict:
         if not integration or integration.status != "connected":
             return {"provider": self.id, "status": "not_connected", "items": []}
-        profile = self.google_get(integration, "https://gmail.googleapis.com/gmail/v1/users/me/profile")
-        labels_payload = self.google_get(integration, "https://gmail.googleapis.com/gmail/v1/users/me/labels")
-        messages_payload = self.google_get(
+        profile = self._safe_google_get(integration, "https://gmail.googleapis.com/gmail/v1/users/me/profile")
+        labels_payload = self._safe_google_get(integration, "https://gmail.googleapis.com/gmail/v1/users/me/labels")
+        messages_payload = self._safe_google_get(
             integration,
             "https://gmail.googleapis.com/gmail/v1/users/me/messages",
             {"maxResults": 8, "q": "newer_than:14d"},
         )
+        if not messages_payload.get("messages"):
+            messages_payload = self._safe_google_get(
+                integration,
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                {"maxResults": 8},
+            )
         messages = []
         for message in messages_payload.get("messages", [])[:8]:
-            detail = self.google_get(
+            detail = self._safe_google_get(
                 integration,
                 f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message.get('id')}",
                 {"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
             )
+            if not detail:
+                continue
             headers = {header.get("name", "").lower(): header.get("value") for header in detail.get("payload", {}).get("headers", [])}
             messages.append(
                 {
@@ -59,3 +67,9 @@ class GmailProvider(BaseIntegrationProvider):
             "items": messages,
             "labels": [{"id": label.get("id"), "name": label.get("name"), "type": label.get("type")} for label in labels[:20]],
         }
+
+    def _safe_google_get(self, integration: Integration, url: str, params: dict | None = None) -> dict:
+        try:
+            return self.google_get(integration, url, params)
+        except Exception as exc:
+            return {"error": str(exc)}
