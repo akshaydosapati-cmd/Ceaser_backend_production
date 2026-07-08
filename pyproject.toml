@@ -1,0 +1,9 @@
+[project]
+name = "ceaser-backend"
+version = "0.1.0"
+description = "CEASER backend foundation"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["app/tests"]
+pythonpath = ["."]

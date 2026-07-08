@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from sqlalchemy.orm import Session
+
+from app.models.integration import Integration
+from app.services.audit_service import AuditService
+from app.services.integrations.connection_service import ConnectionService
+from app.services.integrations.integration_sync_service import IntegrationSyncService
+from app.services.integrations.oauth_manager import OAuthManager
+from app.services.integrations.provider_registry import ProviderRegistry
+from app.services.integrations.token_manager import TokenManager
+
+
+class IntegrationManager:
+    def __init__(self, db: Session):
+        self.db = db
+        self.connections = ConnectionService(db)
+        self.registry = ProviderRegistry()
+        self.oauth = OAuthManager()
+        self.tokens = TokenManager()
+        self.sync_service = IntegrationSyncService()
+
+    def providers(self) -> list[dict]:
+        return [provider.definition().model_dump() for provider in self.registry.list()]
+
+    def list(self, user_id: str) -> list[dict]:
+        records = {record.provider: record for record in self.connections.list(user_id)}
+        return [self._read(provider_id, records.get(provider_id)) for provider_id in self.registry.providers]
+
+    def status(self, user_id: str, provider_id: str) -> dict:
+        provider = self.registry.get(provider_id)
+        return provider.get_status(self.connections.get(user_id=user_id, provider=provider_id))
+
+    def start_connect(self, user_id: str, provider_id: str, workspace_id: str | None = None) -> dict:
+        self.registry.get(provider_id)
+        integration = self.connections.get_or_create(user_id=user_id, provider=provider_id, workspace_id=workspace_id)
+        start = self.oauth.start(provider_id)
+        integration.metadata_json = {**(integration.metadata_json or {}), "oauth_state": start.state}
+        if start.requires_credentials:
+            integration.status = "credentials_required"
+        self.db.commit()
+        self.db.refresh(integration)
+        return {**start.model_dump(), "integration": self._read(provider_id, integration)}
+
+    def complete_connect(self, user_id: str, provider_id: str, code: str, workspace_id: str | None = None) -> Integration:
+        integration = self.connections.get_or_create(user_id=user_id, provider=provider_id, workspace_id=workspace_id)
+        payload = self.oauth.exchange_code(provider_id, code)
+        self.tokens.apply(integration, payload)
+        AuditService(self.db).record(user_id=user_id, action="integration_connected", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id}, commit=False)
+        self.db.commit()
+        self.db.refresh(integration)
+        return integration
+
+    def complete_connect_by_state(self, provider_id: str, code: str, state: str) -> Integration:
+        self.registry.get(provider_id)
+        integration = self.connections.get_by_oauth_state(provider=provider_id, state=state)
+        if not integration:
+            raise ValueError("OAuth session expired. Start the connection again from CEASER.")
+        payload = self.oauth.exchange_code(provider_id, code)
+        self.tokens.apply(integration, payload)
+        integration.metadata_json = {k: v for k, v in (integration.metadata_json or {}).items() if k != "oauth_state"}
+        AuditService(self.db).record(user_id=integration.user_id, action="integration_connected", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id}, commit=False)
+        self.db.commit()
+        self.db.refresh(integration)
+        return integration
+
+    def disconnect(self, user_id: str, provider_id: str) -> Integration:
+        provider = self.registry.get(provider_id)
+        integration = self.connections.get_or_create(user_id=user_id, provider=provider_id)
+        provider.disconnect(integration)
+        AuditService(self.db).record(user_id=user_id, action="integration_disconnected", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id}, commit=False)
+        self.db.commit()
+        self.db.refresh(integration)
+        return integration
+
+    def refresh(self, user_id: str, provider_id: str) -> Integration:
+        provider = self.registry.get(provider_id)
+        integration = self.connections.get_or_create(user_id=user_id, provider=provider_id)
+        provider.refresh_token(integration)
+        AuditService(self.db).record(user_id=user_id, action="integration_token_refreshed", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id}, commit=False)
+        self.db.commit()
+        self.db.refresh(integration)
+        return integration
+
+    def metadata(self, user_id: str, provider_id: str) -> dict:
+        provider = self.registry.get(provider_id)
+        integration = self.connections.get(user_id=user_id, provider=provider_id)
+        return provider.get_metadata(integration)
+
+    def sync(self, user_id: str, provider_id: str) -> Integration:
+        integration = self.connections.get_or_create(user_id=user_id, provider=provider_id)
+        try:
+            self.sync_service.sync(integration)
+            AuditService(self.db).record(user_id=user_id, action="integration_sync_completed", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id}, commit=False)
+        except Exception as exc:
+            integration.status = "sync_failed"
+            integration.metadata_json = {**(integration.metadata_json or {}), "last_sync_error": str(exc)}
+            AuditService(self.db).record(user_id=user_id, action="integration_sync_failed", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id, "error": str(exc)}, commit=False)
+        self.db.commit()
+        self.db.refresh(integration)
+        return integration
+
+    def _read(self, provider_id: str, integration: Integration | None) -> dict:
+        provider = self.registry.get(provider_id)
+        status = provider.get_status(integration)
+        definition = provider.definition().model_dump()
+        return {
+            **definition,
+            **status,
+            "provider_account_id": integration.provider_account_id if integration else None,
+            "connection_id": integration.id if integration else None,
+            "metadata": integration.metadata_json if integration else {},
+            "token_expires_at": integration.token_expires_at.isoformat() if integration and integration.token_expires_at else None,
+        }
