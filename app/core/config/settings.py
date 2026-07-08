@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     google_client_secret: str | None = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
     google_oauth_redirect_uri: str = Field(default="http://localhost:8000/integrations/google-calendar/callback", alias="GOOGLE_OAUTH_REDIRECT_URI")
     google_redirect_base_url: str = Field(default="http://localhost:8000", alias="GOOGLE_REDIRECT_BASE_URL")
+    frontend_app_url: str = Field(default="http://localhost:3000", alias="FRONTEND_APP_URL")
     google_calendar_oauth_redirect_uri: str = Field(default="http://localhost:8000/integrations/google-calendar/callback", alias="GOOGLE_CALENDAR_OAUTH_REDIRECT_URI")
     google_gmail_oauth_redirect_uri: str = Field(default="http://localhost:8000/integrations/gmail/callback", alias="GOOGLE_GMAIL_OAUTH_REDIRECT_URI")
     google_drive_oauth_redirect_uri: str = Field(default="http://localhost:8000/integrations/google-drive/callback", alias="GOOGLE_DRIVE_OAUTH_REDIRECT_URI")

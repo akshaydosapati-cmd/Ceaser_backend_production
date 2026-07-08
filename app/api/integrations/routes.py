@@ -43,18 +43,20 @@ def connect_provider(provider: str, payload: IntegrationConnectRequest, user: An
         if payload.code:
             integration = manager(db).complete_connect(user.id, provider, payload.code, payload.workspace_id)
             return {"provider": provider, "integration": manager(db)._read(provider, integration)}
-        return manager(db).start_connect(user.id, provider, payload.workspace_id)
+        return manager(db).start_connect(user.id, provider, payload.workspace_id, payload.return_url)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{provider}/callback")
 def oauth_callback(provider: str, code: str, db: Annotated[Session, Depends(get_db)], state: str | None = None):
-    frontend_url = settings.google_redirect_base_url.replace(":8000", ":3000")
+    frontend_url = settings.frontend_app_url.rstrip("/")
     if not state:
         return RedirectResponse(f"{frontend_url}/?view=integrations&integration={provider}&status=failed&reason=missing_state")
     try:
-        manager(db).complete_connect_by_state(provider, code, state)
+        integration = manager(db).complete_connect_by_state(provider, code, state)
+        frontend_url = (integration.metadata_json or {}).get("return_url") or frontend_url
+        frontend_url = str(frontend_url).rstrip("/")
     except ValueError:
         return RedirectResponse(f"{frontend_url}/?view=integrations&integration={provider}&status=failed&reason=expired")
     except Exception:

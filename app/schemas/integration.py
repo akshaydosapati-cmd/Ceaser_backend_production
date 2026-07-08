@@ -27,6 +27,7 @@ class IntegrationRead(IntegrationProviderRead):
 class IntegrationConnectRequest(BaseModel):
     code: str | None = None
     workspace_id: str | None = None
+    return_url: str | None = None
 
 
 class IntegrationConnectResponse(BaseModel):

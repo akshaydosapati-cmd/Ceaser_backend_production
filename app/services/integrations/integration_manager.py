@@ -31,11 +31,15 @@ class IntegrationManager:
         provider = self.registry.get(provider_id)
         return provider.get_status(self.connections.get(user_id=user_id, provider=provider_id))
 
-    def start_connect(self, user_id: str, provider_id: str, workspace_id: str | None = None) -> dict:
+    def start_connect(self, user_id: str, provider_id: str, workspace_id: str | None = None, return_url: str | None = None) -> dict:
         self.registry.get(provider_id)
         integration = self.connections.get_or_create(user_id=user_id, provider=provider_id, workspace_id=workspace_id)
         start = self.oauth.start(provider_id)
-        integration.metadata_json = {**(integration.metadata_json or {}), "oauth_state": start.state}
+        integration.metadata_json = {
+            **(integration.metadata_json or {}),
+            "oauth_state": start.state,
+            **({"return_url": return_url} if return_url else {}),
+        }
         if start.requires_credentials:
             integration.status = "credentials_required"
         self.db.commit()
