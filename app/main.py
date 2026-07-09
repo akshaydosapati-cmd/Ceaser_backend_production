@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -69,11 +71,35 @@ def create_app() -> FastAPI:
     app.include_router(voice_router)
     app.include_router(workflows_router)
 
+    @app.get("/")
+    def root() -> dict:
+        return {"service": "CEASER API", "status": "online", "version": app.version}
+
     @app.get("/health")
+    @app.get("/health/live")
     def health() -> dict:
-        with SessionLocal() as db:
-            db.execute(text("SELECT 1"))
-        return {"status": "healthy", "automation_worker": automation_worker.state.as_dict()}
+        return {"status": "healthy", "service": "ceaser-api", "version": app.version}
+
+    @app.get("/health/ready")
+    def readiness() -> dict:
+        started = perf_counter()
+        try:
+            with SessionLocal() as db:
+                db.execute(text("SELECT 1"))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"status": "not_ready", "database": "unavailable", "reason": exc.__class__.__name__},
+            ) from exc
+        return {
+            "status": "ready",
+            "database": "ready",
+            "auth": "configured" if settings.supabase_url and settings.supabase_anon_key else "not_configured",
+            "ai": "configured" if settings.gemini_api_key else "not_configured",
+            "voice": "configured" if settings.deepgram_api_key else "not_configured",
+            "automation_worker": automation_worker.state.as_dict(),
+            "latency_ms": round((perf_counter() - started) * 1000),
+        }
 
     return app
 
