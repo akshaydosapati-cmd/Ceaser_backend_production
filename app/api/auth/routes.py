@@ -2,6 +2,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.database.session import get_db
@@ -26,6 +27,21 @@ from app.schemas.user import UserRead
 from app.services.audit_service import AuditService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.get("/desktop-callback", response_class=HTMLResponse, include_in_schema=False)
+def desktop_callback() -> HTMLResponse:
+    return HTMLResponse(
+        """<!doctype html>
+<html><head><meta charset="utf-8"><title>Returning to CEASER</title></head>
+<body style="background:#080b18;color:#fff;font:16px system-ui;display:grid;place-items:center;min-height:100vh">
+<p>Returning to CEASER...</p>
+<script>
+const destination = "ceaser-app://bundle/auth/callback/" + location.search + location.hash;
+location.replace(destination);
+</script>
+</body></html>"""
+    )
 
 
 def auth_error(exc: Exception) -> HTTPException:
