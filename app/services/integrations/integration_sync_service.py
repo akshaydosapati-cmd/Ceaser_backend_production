@@ -17,9 +17,19 @@ class IntegrationSyncService:
             return integration
         if self.tokens.is_expired(integration):
             provider.refresh_token(integration)
-        metadata = provider.get_metadata(integration)
-        if metadata.get("account_email") and not integration.provider_email:
-            integration.provider_email = metadata.get("account_email")
-        integration.metadata_json = {**(integration.metadata_json or {}), "last_metadata": metadata}
+        try:
+            metadata = provider.get_metadata(integration)
+            if metadata.get("account_email") and not integration.provider_email:
+                integration.provider_email = metadata.get("account_email")
+            integration.metadata_json = {
+                **(integration.metadata_json or {}),
+                "last_metadata": metadata,
+                "last_sync_error": None,
+            }
+        except Exception as exc:
+            integration.metadata_json = {
+                **(integration.metadata_json or {}),
+                "last_sync_error": str(exc),
+            }
         integration.last_sync_at = utc_now()
         return integration

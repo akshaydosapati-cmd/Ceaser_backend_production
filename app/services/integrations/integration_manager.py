@@ -101,7 +101,6 @@ class IntegrationManager:
             self.sync_service.sync(integration)
             AuditService(self.db).record(user_id=user_id, action="integration_sync_completed", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id}, commit=False)
         except Exception as exc:
-            integration.status = "sync_failed"
             integration.metadata_json = {**(integration.metadata_json or {}), "last_sync_error": str(exc)}
             AuditService(self.db).record(user_id=user_id, action="integration_sync_failed", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id, "error": str(exc)}, commit=False)
         self.db.commit()
