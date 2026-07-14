@@ -67,6 +67,18 @@ class CeaserOrchestrator:
                 summary="Calendar lookup completed.",
             )
 
+        integration_response = self._maybe_integration_response(user_id=user_id, message=effective_message)
+        if integration_response:
+            return self._direct_response(
+                user_id=user_id,
+                conversation=conversation,
+                user_message=message,
+                response=integration_response,
+                selected_agents=["Alex"],
+                workflow_type="integration_lookup",
+                summary="Integration lookup completed.",
+            )
+
         identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message)
         if identity_memory_response:
             return self._direct_response(
@@ -197,7 +209,9 @@ class CeaserOrchestrator:
 
         target_date = self._calendar_target_date(message)
         try:
-            metadata = IntegrationManager(self.db).metadata(user_id=user_id, provider_id="google-calendar")
+            integration_manager = IntegrationManager(self.db)
+            integration_manager.sync(user_id=user_id, provider_id="google-calendar")
+            metadata = integration_manager.metadata(user_id=user_id, provider_id="google-calendar")
         except Exception:
             return (
                 "I could not read Google Calendar right now. Please reconnect Google Calendar from Integrations, "
@@ -221,6 +235,48 @@ class CeaserOrchestrator:
             location = f" - {event.get('location')}" if event.get("location") else ""
             time_range = f"{start} - {end}" if end and end != start else start
             lines.append(f"{index}. {time_range}: {title}{location}")
+        return "\n".join(lines)
+
+    def _maybe_integration_response(self, user_id: str, message: str) -> str | None:
+        normalized = message.lower()
+        provider_id = None
+        label = None
+        if re.search(r"\b(gmail|email|emails|inbox|mail)\b", normalized):
+            provider_id, label = "gmail", "Gmail"
+        elif re.search(r"\b(google drive|drive files|drive|my files)\b", normalized):
+            provider_id, label = "google-drive", "Google Drive"
+        elif re.search(r"\b(google tasks|tasks|todo|to-do|to do)\b", normalized):
+            provider_id, label = "google-tasks", "Google Tasks"
+        elif re.search(r"\b(classroom|assignments|coursework|courses)\b", normalized):
+            provider_id, label = "google-classroom", "Google Classroom"
+        if not provider_id:
+            return None
+
+        try:
+            integration_manager = IntegrationManager(self.db)
+            integration_manager.sync(user_id=user_id, provider_id=provider_id)
+            metadata = integration_manager.metadata(user_id=user_id, provider_id=provider_id)
+        except Exception:
+            return f"I could not read {label} right now. Please reconnect {label} from Integrations, then try again."
+
+        if metadata.get("status") != "connected":
+            return f"{label} is not connected yet. Connect it from Integrations, then I can read it."
+
+        items = metadata.get("items") or []
+        if not items:
+            return f"I synced {label}. I did not find any recent items to show."
+
+        lines = [f"I synced {label}. Here are the latest items:"]
+        for index, item in enumerate(items[:8], start=1):
+            title = (
+                item.get("title")
+                or item.get("subject")
+                or item.get("name")
+                or item.get("course_title")
+                or "Untitled"
+            )
+            detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
+            lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
         return "\n".join(lines)
 
     def _maybe_identity_memory_response(self, user_id: str, message: str) -> str | None:
