@@ -9,6 +9,7 @@ from app.services.document_generation.pptx_generator import PPTXGenerator
 from app.services.document_generation.schemas import GeneratedDocumentResult
 from app.services.document_generation.template_manager import TemplateManager
 from app.services.document_generation.xlsx_generator import XLSXGenerator
+from app.intelligence.ai.sync import generate_text_sync
 from app.services.llm.gemini_provider import GeminiProvider
 
 
@@ -51,7 +52,18 @@ class DocumentGenerator:
             "Each section must start with its section heading on its own line, followed by practical finished content.\n"
             "Use concise paragraphs and bullet points where useful. Make it ready for a real user to download."
         )
-        response = GeminiProvider().generate_response(instruction, {"merged_contributions": {"contributions": []}, "document_generation": True})
+        try:
+            response = generate_text_sync(
+                instructions=(
+                    "You are CEASER's document creation engine. Write real finished document content. "
+                    "Do not write instructions, placeholders, or meta commentary. Use the requested headings exactly."
+                ),
+                input_text=instruction,
+                temperature=0.25,
+                max_output_tokens=2200,
+            )
+        except Exception:
+            response = GeminiProvider().generate_response(instruction, {"merged_contributions": {"contributions": []}, "document_generation": True})
         if self._invalid_content(response):
             return "\n\n".join(f"{section}\n{self._fallback_body(section, prompt)}" for section in sections)
         return self._clean_content(response)

@@ -4,7 +4,7 @@ import json
 import logging
 import re
 
-from app.core.config.settings import settings
+from app.intelligence.ai.sync import generate_text_sync
 from app.services.drafts.draft_schema_registry import DraftSchemaRegistry
 from app.services.drafts.draft_validator import DraftValidationError, DraftValidator
 from app.services.llm.gemini_provider import GeminiProvider
@@ -20,8 +20,6 @@ class StructuredDraftGenerator:
     def generate(self, *, prompt: str, draft_type: str, agent_id: str, title: str, target_app: str, requested_units: int, context: dict | None = None) -> dict:
         schema = DraftSchemaRegistry().get(draft_type)
         effective_target = target_app if target_app != "keep_as_draft" else schema.get("target_app", target_app)
-        if not settings.gemini_api_key:
-            raise DraftGenerationError("Draft generation failed because Gemini is not configured.")
         if draft_type == "pitch_deck":
             try:
                 deck = self._generate_slide_deck(
@@ -54,8 +52,10 @@ class StructuredDraftGenerator:
                 logger.warning("Section draft generation failed (%s/%s); falling back to structured JSON path: %s", agent_id, draft_type, exc)
         last_error = "Unknown validation error."
         for strictness in ["strict", "repair"]:
-            response = GeminiProvider().generate_response(self._prompt(prompt, title, draft_type, agent_id, effective_target, requested_units, schema, strictness, context or {}), {"structured_draft_json": True})
-            logger.info("Raw Gemini structured draft response (%s/%s): %s", agent_id, draft_type, response)
+            response = self._generate_provider_json_text(
+                self._prompt(prompt, title, draft_type, agent_id, effective_target, requested_units, schema, strictness, context or {})
+            )
+            logger.info("Raw structured draft provider response (%s/%s): %s", agent_id, draft_type, response)
             try:
                 return DraftValidator().validate(self._extract_json(response), draft_type)
             except (DraftValidationError, json.JSONDecodeError, TypeError) as exc:
@@ -152,12 +152,26 @@ class StructuredDraftGenerator:
             context=context,
         )
         try:
-            response = GeminiProvider().generate_response(section_prompt, {"structured_draft_json": True})
+            response = self._generate_provider_json_text(section_prompt)
             section = self._extract_json(response)
             return self._normalize_section(section, heading=heading, topic=topic, agent_id=agent_id)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             logger.warning("Single section generation failed (%s/%s/%s): %s", agent_id, draft_type, heading, exc)
             return self._fallback_section(heading=heading, topic=topic, agent_id=agent_id, draft_type=draft_type)
+
+    def _generate_provider_json_text(self, prompt: str) -> str:
+        try:
+            return generate_text_sync(
+                instructions=(
+                    "You are CEASER structured draft generation. Return valid JSON only. "
+                    "Never include markdown fences, placeholder text, or meta commentary."
+                ),
+                input_text=prompt,
+                temperature=0.2,
+                max_output_tokens=2400,
+            )
+        except Exception:
+            return GeminiProvider().generate_response(prompt, {"structured_draft_json": True})
 
     def _section_prompt(
         self,

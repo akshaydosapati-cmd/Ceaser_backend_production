@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.models.conversation import Conversation, Message
+from app.intelligence.knowledge.repository import KnowledgeRepository
 from app.repositories.conversation_repository import ConversationRepository
 
 
@@ -45,6 +46,19 @@ class ConversationService:
 
     def create_message(self, conversation_id: str, role: str, content: str, metadata: dict | None = None) -> Message:
         message = self.conversations.create_message(conversation_id=conversation_id, role=role, content=content, metadata=metadata)
+        conversation = self.conversations.get(conversation_id)
+        if conversation and role in {"user", "assistant"}:
+            try:
+                KnowledgeRepository(self.db).ingest_text(
+                    user_id=conversation.user_id,
+                    title=f"{role.title()} message - {conversation.title}",
+                    content=content,
+                    source_type="conversation_message",
+                    conversation_id=conversation_id,
+                    metadata={"role": role, "message_id": message.id, **(metadata or {})},
+                )
+            except Exception:
+                pass
         self.db.commit()
         self.db.refresh(message)
         return message

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import asyncio
 from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -18,6 +19,11 @@ from app.services.orchestrator.response_pipeline import ResponsePipeline
 from app.services.orchestrator.user_context_resolver import UserContextResolver
 from app.services.workflows import WorkflowOrchestrator
 from app.services.integrations import IntegrationManager
+from app.intelligence.knowledge.context_builder import context_builder as intelligence_context_builder
+from app.intelligence.knowledge.engine import KnowledgeEngine
+from app.intelligence.orchestrator.intent_engine import intent_engine
+from app.intelligence.orchestrator.models import RequestContext
+from app.intelligence.orchestrator.retrieval_planner import retrieval_planner
 
 
 class CeaserOrchestrator:
@@ -72,7 +78,8 @@ class CeaserOrchestrator:
             return self._direct_response(
                 user_id=user_id,
                 conversation=conversation,
-                user_message=message,
+                conversation_id=conversation_id,
+                conversation_context=conversation_context,
                 response=integration_response,
                 selected_agents=["Alex"],
                 workflow_type="integration_lookup",
@@ -97,6 +104,11 @@ class CeaserOrchestrator:
         research_query = self._research_query(message, conversation_context)
         research_result = self._maybe_research(query=research_query, selected_agent_names=selected_agent_names)
         memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        knowledge_context = self._knowledge_context(
+            user_id=user_id,
+            message=effective_message,
+            conversation_id=conversation.id if conversation else conversation_id,
+        )
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         final_response = self.response_pipeline.generate(
             message=effective_message,
@@ -108,6 +120,7 @@ class CeaserOrchestrator:
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
                 "documents": attached_documents,
+                "knowledge_context": knowledge_context,
                 "merged_contributions": {
                     "selected_agents": selected_agent_names,
                     "contributions": workflow.contributions,
@@ -158,6 +171,25 @@ class CeaserOrchestrator:
                 metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
             )
         return response_payload
+
+    def _knowledge_context(self, *, user_id: str, message: str, conversation_id: str | None) -> dict:
+        async def build() -> dict:
+            request = RequestContext(user_id=user_id, message=message, conversation_id=conversation_id, interaction_mode="chat")
+            intent = await intent_engine.classify(request)
+            plan = await retrieval_planner.build(request=request, intent=intent)
+            items = await KnowledgeEngine(self.db).retrieve(request=request, plan=plan)
+            package = intelligence_context_builder.build(request=request, items=items)
+            return {
+                "intent": intent.value,
+                "output_format": plan.output_format,
+                "evidence": package.evidence_text,
+                "source_count": len(package.items),
+            }
+
+        try:
+            return asyncio.run(build())
+        except Exception:
+            return {"intent": "unavailable", "output_format": "chat", "evidence": "", "source_count": 0}
 
     def _direct_response(
         self,

@@ -3,6 +3,8 @@ from time import perf_counter
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -11,6 +13,7 @@ from app.api.automations.routes import router as automations_router
 from app.api.agents.routes import router as agents_router
 from app.api.capabilities.routes import router as capabilities_router
 from app.api.ceaser.routes import router as ceaser_router
+from app.api.commercial.routes import router as commercial_router
 from app.api.conversations.routes import router as conversations_router
 from app.api.documents.routes import router as documents_router
 from app.api.desktop.routes import router as desktop_router
@@ -18,6 +21,7 @@ from app.api.drafts.routes import agent_router as agent_workbenches_router
 from app.api.drafts.routes import router as drafts_router
 from app.api.files.routes import router as files_router
 from app.api.integrations.routes import router as integrations_router
+from app.api.knowledge.routes import router as knowledge_router
 from app.api.live.routes import router as live_router
 from app.api.memories.routes import router as memories_router
 from app.api.messages.routes import chat_router, router as messages_router
@@ -27,6 +31,7 @@ from app.api.voice.routes import router as voice_router
 from app.api.workflows.routes import router as workflows_router
 from app.core.config.settings import settings
 from app.core.database.session import SessionLocal
+from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.services.automations.automation_worker import automation_worker
 
 
@@ -50,6 +55,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.exception_handler(AIServiceUnavailableError)
+    async def ai_service_unavailable_handler(request: Request, exc: AIServiceUnavailableError) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": exc.public_message})
+
     app.include_router(auth_router)
     app.include_router(automations_router)
     app.include_router(agents_router)
@@ -62,10 +71,12 @@ def create_app() -> FastAPI:
     app.include_router(messages_router)
     app.include_router(chat_router)
     app.include_router(ceaser_router)
+    app.include_router(commercial_router)
     app.include_router(memories_router)
     app.include_router(projects_router)
     app.include_router(files_router)
     app.include_router(integrations_router)
+    app.include_router(knowledge_router)
     app.include_router(live_router)
     app.include_router(research_router)
     app.include_router(voice_router)
@@ -95,7 +106,7 @@ def create_app() -> FastAPI:
             "status": "ready",
             "database": "ready",
             "auth": "configured" if settings.supabase_url and settings.supabase_anon_key else "not_configured",
-            "ai": "configured" if settings.gemini_api_key else "not_configured",
+            "ai": "configured" if settings.openai_api_key or settings.gemini_api_key else "not_configured",
             "voice": "configured" if settings.deepgram_api_key else "not_configured",
             "automation_worker": automation_worker.state.as_dict(),
             "latency_ms": round((perf_counter() - started) * 1000),

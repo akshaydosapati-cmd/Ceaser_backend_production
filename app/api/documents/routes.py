@@ -10,6 +10,9 @@ from app.core.security.dependencies import get_current_user
 from app.models.file import File
 from app.models.generated_document import GeneratedDocument
 from app.models.user import User
+from app.core.config.settings import settings
+from app.intelligence.knowledge.embedding_service import KnowledgeEmbeddingService
+from app.intelligence.knowledge.repository import KnowledgeRepository
 from app.schemas.document_generation import AgentActivityRead, GenerateDocumentRequest, GenerateDocumentResponse, GeneratedDocumentRead, TemplateRead
 from app.services.audit_service import AuditService
 from app.services.document_generation import DocumentGenerator, TemplateManager
@@ -47,6 +50,25 @@ def generate_document(payload: GenerateDocumentRequest, user: Annotated[User, De
     db.add(file)
     db.flush()
     generated = ExportManager(db).record_generated(file_id=file.id, user_id=user.id, agent_id=result.agent_id, template_id=result.template.id, export_format=result.kind, prompt=payload.prompt)
+    source = KnowledgeRepository(db).ingest_text(
+        user_id=user.id,
+        title=result.filename,
+        content=result.content,
+        source_type="generated_document",
+        project_id=file.project_id,
+        metadata={
+            "file_id": file.id,
+            "generated_document_id": generated.id,
+            "agent_id": result.agent_id,
+            "template_id": result.template.id,
+            "export_format": result.kind,
+        },
+    )
+    if settings.knowledge_auto_embed:
+        try:
+            KnowledgeEmbeddingService(db).embed_source_sync(user_id=user.id, source_id=source.id)
+        except Exception:
+            pass
     AuditService(db).record(user_id=user.id, action="document_generated", resource_type="file", resource_id=file.id, metadata=file.extraction_metadata, commit=False)
     AuditService(db).record(user_id=user.id, action="template_used", resource_type="template", resource_id=result.template.id, commit=False)
     AuditService(db).record(user_id=user.id, action="agent_document_created", resource_type="agent", resource_id=result.agent_id, metadata={"file_id": file.id}, commit=False)

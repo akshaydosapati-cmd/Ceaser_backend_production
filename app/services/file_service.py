@@ -3,6 +3,10 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.models.file import File
+from app.core.config.settings import settings
+from app.intelligence.ai.sync import generate_text_sync
+from app.intelligence.knowledge.embedding_service import KnowledgeEmbeddingService
+from app.intelligence.knowledge.repository import KnowledgeRepository
 from app.repositories.file_repository import FileRepository
 from app.services.documents import DocumentManager
 from app.services.llm.gemini_provider import GeminiProvider
@@ -42,17 +46,39 @@ class FileService:
         extracted = DocumentManager().extract(StorageService().resolve(storage_path), file_type)
         file.extracted_content = extracted.content
         file.extraction_metadata = {"title": extracted.title, "pages": extracted.pages, **extracted.metadata}
+        if extracted.content:
+            source = KnowledgeRepository(self.db).ingest_text(
+                user_id=user_id,
+                title=filename,
+                content=extracted.content,
+                source_type="uploaded_file",
+                project_id=project_id,
+                metadata={"file_id": file.id, "file_type": file_type, "storage_path": storage_path, **file.extraction_metadata},
+            )
+            if settings.knowledge_auto_embed:
+                try:
+                    KnowledgeEmbeddingService(self.db).embed_source_sync(user_id=user_id, source_id=source.id)
+                except Exception:
+                    pass
         self.db.commit()
         self.db.refresh(file)
         return file
 
     def analyze(self, file: File, action: str, language: str | None = None, question: str | None = None) -> str:
         prompt = DocumentManager().build_prompt(action=action, file_name=file.name, content=file.extracted_content, language=language, question=question)
-        return GeminiProvider().generate_response(
-            prompt,
-            {
-                "scope": {"id": file.user_id},
-                "document": {"name": file.name, "metadata": file.extraction_metadata},
-                "merged_contributions": {"contributions": []},
-            },
+        instructions = (
+            "You are CEASER document intelligence. Use the provided document content only when answering. "
+            "Format the output for the requested action: summary, explanation, notes, MCQs, flashcards, or action items. "
+            "Do not return generic template text."
         )
+        try:
+            return generate_text_sync(instructions=instructions, input_text=prompt)
+        except Exception:
+            return GeminiProvider().generate_response(
+                prompt,
+                {
+                    "scope": {"id": file.user_id},
+                    "document": {"name": file.name, "metadata": file.extraction_metadata},
+                    "merged_contributions": {"contributions": []},
+                },
+            )
