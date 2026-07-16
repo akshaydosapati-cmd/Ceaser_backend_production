@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from email.utils import parseaddr
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -287,7 +288,17 @@ class UsageService:
         if not counter:
             counter = UsageCounter(user_id=user_id, entitlement_key=key, period_start=start, period_end=end, used_quantity=0)
             self.db.add(counter)
-            self.db.flush()
+            try:
+                self.db.flush()
+            except IntegrityError:
+                self.db.rollback()
+                counter = (
+                    self.db.query(UsageCounter)
+                    .filter(UsageCounter.user_id == user_id, UsageCounter.entitlement_key == key, UsageCounter.period_start == start, UsageCounter.period_end == end)
+                    .first()
+                )
+                if not counter:
+                    raise
         return counter
 
 
