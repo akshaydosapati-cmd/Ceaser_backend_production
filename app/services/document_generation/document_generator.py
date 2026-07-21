@@ -10,7 +10,6 @@ from app.services.document_generation.schemas import GeneratedDocumentResult
 from app.services.document_generation.template_manager import TemplateManager
 from app.services.document_generation.xlsx_generator import XLSXGenerator
 from app.intelligence.ai.sync import generate_text_sync
-from app.services.llm.gemini_provider import GeminiProvider
 
 
 class DocumentGenerator:
@@ -63,7 +62,7 @@ class DocumentGenerator:
                 max_output_tokens=2200,
             )
         except Exception:
-            response = GeminiProvider().generate_response(instruction, {"merged_contributions": {"contributions": []}, "document_generation": True})
+            response = ""
         if self._invalid_content(response):
             return "\n\n".join(f"{section}\n{self._fallback_body(section, prompt)}" for section in sections)
         return self._clean_content(response)

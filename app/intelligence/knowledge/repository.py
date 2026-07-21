@@ -6,7 +6,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.core.config.settings import settings
-from app.intelligence.ai.embeddings.registry import embedding_registry
+from app.intelligence.ai.ai_provider_service import ai_provider_service
 from app.intelligence.knowledge.chunker import text_chunker
 from app.models.knowledge import ContextRun, KnowledgeChunk, KnowledgeRetrievalLog, KnowledgeSource
 from app.models.mixins import utc_now
@@ -178,7 +178,7 @@ class KnowledgeRepository:
         if not self.pgvector_available():
             return []
         try:
-            embedding = await embedding_registry.production().embed_query(query)
+            embedding = await ai_provider_service.embeddings.production().embed_query(query)
             if not embedding:
                 return []
             vector_literal = "[" + ",".join(str(float(value)) for value in embedding) + "]"

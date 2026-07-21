@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config.settings import settings
-from app.intelligence.ai.embeddings.registry import embedding_registry
+from app.intelligence.ai.ai_provider_service import ai_provider_service
 from app.models.knowledge import KnowledgeChunk, KnowledgeSource
 from app.models.mixins import utc_now
 
@@ -32,7 +32,7 @@ class KnowledgeEmbeddingService:
         source.status = "embedding"
         self.db.flush()
         try:
-            vectors = await embedding_registry.production().embed_documents([chunk.content for chunk in chunks])
+            vectors = await ai_provider_service.embeddings.production().embed_documents([chunk.content for chunk in chunks])
             pgvector_enabled = self._pgvector_available()
             for chunk, vector in zip(chunks, vectors, strict=False):
                 chunk.embedding = vector

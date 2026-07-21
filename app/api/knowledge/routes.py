@@ -9,8 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config.settings import settings
 from app.core.database.session import get_db
 from app.core.security.dependencies import get_current_user
-from app.intelligence.ai.embeddings.registry import embedding_registry
-from app.intelligence.ai.llm.registry import llm_registry
+from app.intelligence.ai.ai_provider_service import ai_provider_service
 from app.intelligence.knowledge.context_builder import context_builder
 from app.intelligence.knowledge.engine import KnowledgeEngine
 from app.intelligence.knowledge.embedding_service import KnowledgeEmbeddingService
@@ -155,7 +154,7 @@ async def verify_ai_path(user: Annotated[User, Depends(get_current_user)], db: A
     if not settings.openai_api_key:
         return result
     try:
-        text_response = await llm_registry.production().generate(
+        text_response = await ai_provider_service.llm.production().generate(
             instructions="Reply with exactly: CEASER OpenAI generation ready.",
             input_text="health check",
             max_output_tokens=32,
@@ -164,7 +163,7 @@ async def verify_ai_path(user: Annotated[User, Depends(get_current_user)], db: A
     except Exception as exc:
         result["generation"] = f"failed: {type(exc).__name__}"
     try:
-        json_response = await llm_registry.production().generate_json(
+        json_response = await ai_provider_service.llm.production().generate_json(
             instructions="Return JSON only.",
             input_text="Return status ready.",
             schema={"status": "ready"},
@@ -173,7 +172,7 @@ async def verify_ai_path(user: Annotated[User, Depends(get_current_user)], db: A
     except Exception as exc:
         result["structured_json"] = f"failed: {type(exc).__name__}"
     try:
-        embedding = await embedding_registry.production().embed_query("CEASER semantic search health check")
+        embedding = await ai_provider_service.embeddings.production().embed_query("CEASER semantic search health check")
         result["embedding"] = "ok" if embedding else "empty"
         result["embedding_dimension_seen"] = len(embedding)
     except Exception as exc:

@@ -6,7 +6,7 @@ from time import perf_counter
 from sqlalchemy.orm import Session
 
 from app.core.config.settings import settings
-from app.intelligence.ai.llm.registry import llm_registry
+from app.intelligence.ai.ai_provider_service import ai_provider_service
 from app.intelligence.formatting.response_formatter import response_formatter
 from app.intelligence.knowledge.context_builder import context_builder
 from app.intelligence.knowledge.engine import KnowledgeEngine
@@ -32,13 +32,13 @@ class RequestOrchestrator:
             domain_result = self._domain_result(intent=intent, plan=plan, context_items=len(items))
         else:
             try:
-                llm = llm_registry.production()
+                llm = ai_provider_service.llm.production()
                 domain_result = await llm.generate(
                     instructions=self._instructions_for(intent),
                     input_text=context.to_prompt(request.message),
                 )
             except Exception:
-                llm = llm_registry.fallback()
+                llm = ai_provider_service.llm.fallback()
                 domain_result = await llm.generate(
                     instructions=self._instructions_for(intent),
                     input_text=context.to_prompt(request.message),

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from app.intelligence.ai.sync import generate_text_sync
-from app.services.llm.gemini_provider import GeminiProvider
 from app.services.llm.provider import LLMProvider
 
 
 class ResponsePipeline:
     def __init__(self, provider: LLMProvider | None = None):
-        self.provider = provider or GeminiProvider()
+        self.provider = provider
 
     def generate(self, message: str, context: dict) -> str:
         instructions = (
@@ -30,4 +29,6 @@ class ResponsePipeline:
         try:
             return generate_text_sync(instructions=instructions, input_text=context_text)
         except Exception:
-            return self.provider.generate_response(message=message, context=context)
+            if self.provider:
+                return self.provider.generate_response(message=message, context=context)
+            return "AI service is temporarily unavailable. Please try again later."

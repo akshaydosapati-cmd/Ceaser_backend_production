@@ -7,7 +7,6 @@ import re
 from app.intelligence.ai.sync import generate_text_sync
 from app.services.drafts.draft_schema_registry import DraftSchemaRegistry
 from app.services.drafts.draft_validator import DraftValidationError, DraftValidator
-from app.services.llm.gemini_provider import GeminiProvider
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +169,8 @@ class StructuredDraftGenerator:
                 temperature=0.2,
                 max_output_tokens=2400,
             )
-        except Exception:
-            return GeminiProvider().generate_response(prompt, {"structured_draft_json": True})
+        except Exception as exc:
+            raise DraftGenerationError("AI service is temporarily unavailable. Please try again later.") from exc
 
     def _section_prompt(
         self,
@@ -452,7 +451,7 @@ class StructuredDraftGenerator:
             context=context,
         )
         try:
-            response = GeminiProvider().generate_response(slide_prompt, {"structured_draft_json": True})
+            response = self._generate_provider_json_text(slide_prompt)
             slide = self._extract_json(response)
             return self._normalize_slide(slide, slide_name=slide_name, slide_number=slide_number, topic=topic)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -545,7 +544,7 @@ class StructuredDraftGenerator:
             f"Required schema: {json.dumps(schema)}\n"
             f"Malformed JSON/text:\n{response}"
         )
-        return GeminiProvider().generate_response(repair_prompt, {"structured_draft_json": True})
+        return self._generate_provider_json_text(repair_prompt)
 
     def _fallback_content(self, *, prompt: str, title: str, draft_type: str, agent_id: str, target_app: str, requested_units: int) -> dict:
         base = {

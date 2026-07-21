@@ -9,7 +9,6 @@ from app.intelligence.knowledge.embedding_service import KnowledgeEmbeddingServi
 from app.intelligence.knowledge.repository import KnowledgeRepository
 from app.repositories.file_repository import FileRepository
 from app.services.documents import DocumentManager
-from app.services.llm.gemini_provider import GeminiProvider
 from app.services.storage_service import StorageService
 
 
@@ -74,11 +73,4 @@ class FileService:
         try:
             return generate_text_sync(instructions=instructions, input_text=prompt)
         except Exception:
-            return GeminiProvider().generate_response(
-                prompt,
-                {
-                    "scope": {"id": file.user_id},
-                    "document": {"name": file.name, "metadata": file.extraction_metadata},
-                    "merged_contributions": {"contributions": []},
-                },
-            )
+            return "AI service is temporarily unavailable. Please try again later."
