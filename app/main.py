@@ -28,6 +28,7 @@ from app.api.messages.routes import chat_router, router as messages_router
 from app.api.projects.routes import router as projects_router
 from app.api.research.routes import router as research_router
 from app.api.voice.routes import router as voice_router
+from app.api.waitlist.routes import router as waitlist_router
 from app.api.workflows.routes import router as workflows_router
 from app.core.config.settings import settings
 from app.core.database.session import SessionLocal
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(live_router)
     app.include_router(research_router)
     app.include_router(voice_router)
+    app.include_router(waitlist_router)
     app.include_router(workflows_router)
 
     @app.get("/")
