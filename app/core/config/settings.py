@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     openai_embedding_dimension: int = Field(default=1536, alias="OPENAI_EMBEDDING_DIMENSION")
     openai_temperature: float = Field(default=0.3, alias="OPENAI_TEMPERATURE")
     openai_max_tokens: int = Field(default=1600, alias="OPENAI_MAX_TOKENS")
+    openai_request_timeout_seconds: float = Field(default=8.0, alias="OPENAI_REQUEST_TIMEOUT_SECONDS")
+    gemini_request_timeout_seconds: float = Field(default=22.0, alias="GEMINI_REQUEST_TIMEOUT_SECONDS")
     knowledge_use_pgvector: bool = Field(default=True, alias="KNOWLEDGE_USE_PGVECTOR")
     knowledge_auto_embed: bool = Field(default=True, alias="KNOWLEDGE_AUTO_EMBED")
     knowledge_hnsw_enabled: bool = Field(default=True, alias="KNOWLEDGE_HNSW_ENABLED")

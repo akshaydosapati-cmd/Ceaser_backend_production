@@ -77,9 +77,10 @@ class GeminiFallbackProvider(LLMProvider):
             "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
         }
         try:
-            async with httpx.AsyncClient(timeout=45) as client:
+            async with httpx.AsyncClient(timeout=settings.gemini_request_timeout_seconds) as client:
                 response = await client.post(url, params={"key": settings.gemini_api_key}, json=payload)
                 response.raise_for_status()
+                logger.info("Gemini fallback generation succeeded.")
                 return response.json()
         except httpx.HTTPStatusError as exc:
             logger.error(

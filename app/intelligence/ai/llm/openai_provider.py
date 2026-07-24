@@ -97,7 +97,7 @@ class OpenAIProvider(LLMProvider):
         if response_format:
             payload["response_format"] = response_format
         try:
-            async with httpx.AsyncClient(timeout=18) as client:
+            async with httpx.AsyncClient(timeout=settings.openai_request_timeout_seconds) as client:
                 response = await client.post(
                     self.endpoint,
                     headers={"Authorization": f"Bearer {settings.openai_api_key}"},
