@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from app.core.config.settings import settings
+from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.intelligence.ai.llm.base import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 class GeminiFallbackProvider(LLMProvider):
@@ -55,16 +59,28 @@ class GeminiFallbackProvider(LLMProvider):
 
     async def _post(self, *, prompt: str, model: str, temperature: float, max_tokens: int) -> dict[str, Any]:
         if not settings.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY is not configured.")
+            logger.error("Gemini fallback blocked: GEMINI_API_KEY is not configured.")
+            raise AIServiceUnavailableError("GEMINI_API_KEY is not configured.")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
         }
-        async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.post(url, params={"key": settings.gemini_api_key}, json=payload)
-            response.raise_for_status()
-            return response.json()
+        try:
+            async with httpx.AsyncClient(timeout=45) as client:
+                response = await client.post(url, params={"key": settings.gemini_api_key}, json=payload)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Gemini fallback failed: status=%s body=%s",
+                exc.response.status_code,
+                exc.response.text[:1200],
+            )
+            raise AIServiceUnavailableError(exc.response.text[:1200]) from exc
+        except httpx.RequestError as exc:
+            logger.error("Gemini fallback network error: %s", repr(exc))
+            raise AIServiceUnavailableError(repr(exc)) from exc
 
     def _extract_text(self, data: dict[str, Any]) -> str:
         candidates = data.get("candidates") or []
@@ -72,4 +88,3 @@ class GeminiFallbackProvider(LLMProvider):
             return ""
         parts = candidates[0].get("content", {}).get("parts", [])
         return "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
-

@@ -6,6 +6,7 @@ from time import perf_counter
 from sqlalchemy.orm import Session
 
 from app.core.config.settings import settings
+from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.intelligence.ai.ai_provider_service import ai_provider_service
 from app.intelligence.formatting.response_formatter import response_formatter
 from app.intelligence.knowledge.context_builder import context_builder
@@ -31,18 +32,10 @@ class RequestOrchestrator:
         if not plan.needs_generation:
             domain_result = self._domain_result(intent=intent, plan=plan, context_items=len(items))
         else:
-            try:
-                llm = ai_provider_service.llm.production()
-                domain_result = await llm.generate(
-                    instructions=self._instructions_for(intent),
-                    input_text=context.to_prompt(request.message),
-                )
-            except Exception:
-                llm = ai_provider_service.llm.fallback()
-                domain_result = await llm.generate(
-                    instructions=self._instructions_for(intent),
-                    input_text=context.to_prompt(request.message),
-                )
+            domain_result = await self._generate_with_fallback(
+                instructions=self._instructions_for(intent),
+                input_text=context.to_prompt(request.message),
+            )
         response = response_formatter.format(intent=intent, domain_result=domain_result, context=context)
         self.repository.record_context_run(
             user_id=request.user_id,
@@ -56,6 +49,15 @@ class RequestOrchestrator:
             started=started,
         )
         return response
+
+    async def _generate_with_fallback(self, *, instructions: str, input_text: str) -> str:
+        last_error: Exception | None = None
+        for llm in (ai_provider_service.llm.production(), ai_provider_service.llm.fallback()):
+            try:
+                return await llm.generate(instructions=instructions, input_text=input_text)
+            except Exception as exc:
+                last_error = exc
+        raise AIServiceUnavailableError(repr(last_error))
 
     def _domain_result(self, *, intent: IntentType, plan: RetrievalPlan, context_items: int) -> dict:
         return {
