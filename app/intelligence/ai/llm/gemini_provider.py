@@ -24,13 +24,23 @@ class GeminiFallbackProvider(LLMProvider):
         temperature: float | None = None,
         max_output_tokens: int | None = None,
     ) -> str:
+        prompt = self._prompt(instructions=instructions, input_text=input_text)
         data = await self._post(
-            prompt=f"{instructions}\n\n{input_text}",
+            prompt=prompt,
             model=model or settings.gemini_model,
             temperature=temperature if temperature is not None else settings.gemini_temperature,
             max_tokens=max_output_tokens or settings.gemini_max_tokens,
         )
-        return self._extract_text(data)
+        text = self._extract_text(data)
+        if self._needs_retry(text):
+            data = await self._post(
+                prompt=self._retry_prompt(instructions=instructions, input_text=input_text, bad_answer=text),
+                model=model or settings.gemini_model,
+                temperature=0.2,
+                max_tokens=max(max_output_tokens or settings.gemini_max_tokens, 900),
+            )
+            text = self._extract_text(data)
+        return text
 
     async def generate_json(
         self,
@@ -88,3 +98,30 @@ class GeminiFallbackProvider(LLMProvider):
             return ""
         parts = candidates[0].get("content", {}).get("parts", [])
         return "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+
+    def _prompt(self, *, instructions: str, input_text: str) -> str:
+        return (
+            "You are CEASER, a serious personal AI operating system.\n"
+            "Answer in clear, modern, useful English.\n"
+            "Do not roleplay. Do not use Shakespearean, poetic, Latin, joke, or theatrical style unless the user asks for it.\n"
+            "Give a complete, direct answer that fits the user's request.\n\n"
+            f"Task instructions:\n{instructions}\n\n"
+            f"User request and context:\n{input_text}"
+        )
+
+    def _retry_prompt(self, *, instructions: str, input_text: str, bad_answer: str) -> str:
+        return (
+            "Your previous answer was not acceptable because it was incomplete or used the wrong style.\n"
+            "Rewrite it as CEASER: direct, practical, complete, and student-friendly.\n"
+            "No roleplay. No archaic language. No Latin. No jokes.\n\n"
+            f"Task instructions:\n{instructions}\n\n"
+            f"User request and context:\n{input_text}\n\n"
+            f"Bad answer to replace:\n{bad_answer}"
+        )
+
+    def _needs_retry(self, text: str) -> bool:
+        normalized = text.strip().lower()
+        if len(normalized) < 80:
+            return True
+        blocked_starts = ("hark", "verily", "thou", "veni", "behold", "young scholar")
+        return normalized.startswith(blocked_starts)
