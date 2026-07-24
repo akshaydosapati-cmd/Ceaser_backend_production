@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -12,6 +13,7 @@ from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.intelligence.ai.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
+_quota_blocked_until = 0.0
 
 
 class OpenAIProvider(LLMProvider):
@@ -80,6 +82,9 @@ class OpenAIProvider(LLMProvider):
         if not settings.openai_api_key:
             logger.error("OpenAI request blocked: OPENAI_API_KEY is not configured.")
             raise AIServiceUnavailableError("OPENAI_API_KEY is not configured.")
+        global _quota_blocked_until
+        if time.time() < _quota_blocked_until:
+            raise AIServiceUnavailableError("OpenAI quota circuit is temporarily open.")
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -92,7 +97,7 @@ class OpenAIProvider(LLMProvider):
         if response_format:
             payload["response_format"] = response_format
         try:
-            async with httpx.AsyncClient(timeout=45) as client:
+            async with httpx.AsyncClient(timeout=18) as client:
                 response = await client.post(
                     self.endpoint,
                     headers={"Authorization": f"Bearer {settings.openai_api_key}"},
@@ -101,6 +106,8 @@ class OpenAIProvider(LLMProvider):
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
+                _quota_blocked_until = time.time() + 600
             logger.error(
                 "OpenAI generation failed: status=%s body=%s",
                 exc.response.status_code,
