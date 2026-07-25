@@ -12,7 +12,6 @@ class UserContextResolver:
         self.agents = AgentRepository(db)
 
     def resolve(self, user_id: str) -> dict:
-        AgentService(self.db).ensure_default_agents(user_id)
         enabled_agents = [
             {
                 "id": agent.id,
@@ -20,7 +19,7 @@ class UserContextResolver:
                 "enabled": agent.enabled,
                 "modules": [module.module_name for module in agent.modules if module.enabled],
             }
-            for agent in self.agents.list(user_id=user_id)
+            for agent in AgentService(self.db).list(user_id=user_id)
             if agent.enabled
         ]
         return {

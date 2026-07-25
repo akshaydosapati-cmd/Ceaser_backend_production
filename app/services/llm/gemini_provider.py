@@ -74,14 +74,13 @@ class GeminiProvider(LLMProvider):
             sections.append(
                 "For research answers, write a useful brief with concrete points, trends, companies, dates, or facts found "
                 "in the research context. Include compact inline citations like [1], [2] when using source-backed claims. "
-                "Do not put raw URLs in the answer because the UI shows source cards separately. "
+                "Do not put raw URLs in the answer. "
                 "When sources are broad directories or rankings, extract the most useful company names from source titles/snippets if available; "
-                "if names are not available in the context, use general knowledge to provide a helpful provisional list and clearly note that source cards should be opened for verification."
+                "if names are not available in the context, use general knowledge to provide a helpful provisional list."
             )
         sections.append(
             "Return only the final user-facing answer. Do not include a raw Sources section, source bibliography, "
-            "debug trace, selected agent list, confidence scores, or JSON. The CEASER UI renders sources, citations, "
-            "agent contributions, frameworks, and confidence separately. If research is present, cite compactly inline "
+            "debug trace, selected agent list, confidence scores, or JSON. If research is present, cite compactly inline "
             "with bracket numbers like [1] where useful, but do not list the sources. Start directly with the answer; "
             "do not preface it with what CEASER did internally."
         )
@@ -313,9 +312,7 @@ class GeminiProvider(LLMProvider):
                 lines.append(f"{index}. {snippet}")
 
             lines.extend(["", "Recommendations"])
-            lines.append("Use the source cards below to verify details, then narrow the next question by geography, market segment, competitor set, or implementation angle.")
-            lines.extend(["", "Sources"])
-            lines.append("The source cards below include names, explanations, and links.")
+            lines.append("Use the strongest findings to narrow the next question by geography, market segment, competitor set, or implementation angle.")
             return "\n".join(lines)
 
         if memories:
@@ -442,7 +439,7 @@ class GeminiProvider(LLMProvider):
     def _clean_response(self, response: str, has_research: bool) -> str:
         if not has_research:
             return response
-        markers = ["\n---\n**Sources:**", "\n**Sources:**", "\n### Sources", "\nSources:"]
+        markers = ["\n---\n**Sources:**", "\n**Sources:**", "\n### Sources", "\nSources:", "\nSources"]
         cleaned = response
         for marker in markers:
             if marker in cleaned:

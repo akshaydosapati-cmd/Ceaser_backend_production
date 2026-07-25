@@ -30,7 +30,13 @@ def create_message(payload: MessageCreate, user: Annotated[User, Depends(get_cur
     if not payload.conversation_id:
         raise HTTPException(status_code=400, detail="conversation_id is required")
     require_conversation_access(db, user, payload.conversation_id)
-    message = ConversationService(db).create_message(conversation_id=payload.conversation_id, role=payload.role, content=payload.content, metadata=payload.metadata)
+    message = ConversationService(db).create_message(
+        conversation_id=payload.conversation_id,
+        role=payload.role,
+        content=payload.content,
+        metadata=payload.metadata,
+        ingest_knowledge=False,
+    )
     AuditService(db).record(user_id=user.id, action="message_created", resource_type="message", resource_id=message.id)
     return message
 
@@ -46,6 +52,12 @@ def chat_messages(conversation_id: str, user: Annotated[User, Depends(get_curren
 @chat_router.post("/conversations/{conversation_id}/messages", response_model=MessageRead, status_code=status.HTTP_201_CREATED)
 def chat_send_message(conversation_id: str, payload: MessageCreate, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
     require_conversation_access(db, user, conversation_id)
-    message = ConversationService(db).create_message(conversation_id=conversation_id, role=payload.role, content=payload.content, metadata=payload.metadata)
+    message = ConversationService(db).create_message(
+        conversation_id=conversation_id,
+        role=payload.role,
+        content=payload.content,
+        metadata=payload.metadata,
+        ingest_knowledge=False,
+    )
     AuditService(db).record(user_id=user.id, action="message_created", resource_type="message", resource_id=message.id)
     return message

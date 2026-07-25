@@ -44,10 +44,18 @@ class ConversationService:
     def list_messages(self, conversation_id: str | None = None, limit: int = 100, offset: int = 0) -> list[Message]:
         return self.conversations.list_messages(conversation_id=conversation_id, limit=limit, offset=offset)
 
-    def create_message(self, conversation_id: str, role: str, content: str, metadata: dict | None = None) -> Message:
+    def create_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        metadata: dict | None = None,
+        *,
+        ingest_knowledge: bool = True,
+    ) -> Message:
         message = self.conversations.create_message(conversation_id=conversation_id, role=role, content=content, metadata=metadata)
         conversation = self.conversations.get(conversation_id)
-        if conversation and role in {"user", "assistant"}:
+        if ingest_knowledge and conversation and role in {"user", "assistant"}:
             try:
                 KnowledgeRepository(self.db).ingest_text(
                     user_id=conversation.user_id,

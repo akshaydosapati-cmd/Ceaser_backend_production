@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
+import logging
 from time import perf_counter
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -36,6 +38,9 @@ from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.services.automations.automation_worker import automation_worker
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     automation_worker.start()
@@ -55,6 +60,25 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def observability_middleware(request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or uuid4().hex
+        request.state.request_id = request_id
+        started = perf_counter()
+        response = await call_next(request)
+        elapsed_ms = round((perf_counter() - started) * 1000)
+        response.headers["X-Request-Id"] = request_id
+        response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
+        logger.info(
+            "request_complete method=%s path=%s status=%s request_id=%s elapsed_ms=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            request_id,
+            elapsed_ms,
+        )
+        return response
 
     @app.exception_handler(AIServiceUnavailableError)
     async def ai_service_unavailable_handler(request: Request, exc: AIServiceUnavailableError) -> JSONResponse:

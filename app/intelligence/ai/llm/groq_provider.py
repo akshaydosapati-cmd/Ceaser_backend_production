@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -14,11 +13,10 @@ from app.intelligence.ai.llm.base import LLMProvider
 from app.intelligence.ai.llm.http_errors import ai_error_from_http_error
 
 logger = logging.getLogger(__name__)
-_quota_blocked_until = 0.0
 
 
-class OpenAIProvider(LLMProvider):
-    endpoint = "https://api.openai.com/v1/chat/completions"
+class GroqProvider(LLMProvider):
+    endpoint = "https://api.groq.com/openai/v1/chat/completions"
 
     async def generate(
         self,
@@ -30,10 +28,10 @@ class OpenAIProvider(LLMProvider):
         max_output_tokens: int | None = None,
     ) -> str:
         data = await self._post(
-            model=model or settings.openai_model,
+            model=model or settings.groq_model,
             instructions=instructions,
             input_text=input_text,
-            temperature=temperature if temperature is not None else settings.openai_temperature,
+            temperature=temperature if temperature is not None else 0.3,
             max_tokens=max_output_tokens or settings.openai_max_tokens,
         )
         return self._extract_text(data)
@@ -51,15 +49,14 @@ class OpenAIProvider(LLMProvider):
             f"{json.dumps(schema, ensure_ascii=True)}"
         )
         data = await self._post(
-            model=model or settings.openai_json_model,
+            model=model or settings.groq_model,
             instructions=schema_instruction,
             input_text=input_text,
             temperature=0.2,
             max_tokens=settings.openai_max_tokens,
             response_format={"type": "json_object"},
         )
-        text = self._extract_text(data)
-        return json.loads(text)
+        return json.loads(self._extract_text(data))
 
     async def stream(
         self,
@@ -80,18 +77,8 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not settings.openai_api_key:
-            logger.error("OpenAI request blocked: OPENAI_API_KEY is not configured.")
-            raise AIServiceUnavailableError("OPENAI_API_KEY is not configured.")
-        global _quota_blocked_until
-        if time.time() < _quota_blocked_until:
-            raise AIServiceUnavailableError("OpenAI quota circuit is temporarily open.")
-        timeout = httpx.Timeout(
-            connect=settings.llm_connect_timeout_seconds,
-            read=settings.llm_total_timeout_seconds,
-            write=settings.llm_total_timeout_seconds,
-            pool=settings.llm_total_timeout_seconds,
-        )
+        if not settings.groq_api_key:
+            raise AIServiceUnavailableError("GROQ_API_KEY is not configured.", retryable=False, provider="groq", category="configuration")
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -104,26 +91,26 @@ class OpenAIProvider(LLMProvider):
         if response_format:
             payload["response_format"] = response_format
         try:
+            timeout = httpx.Timeout(
+                connect=settings.llm_connect_timeout_seconds,
+                read=settings.llm_total_timeout_seconds,
+                write=settings.llm_total_timeout_seconds,
+                pool=settings.llm_total_timeout_seconds,
+            )
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     self.endpoint,
-                    headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                    headers={"Authorization": f"Bearer {settings.groq_api_key}"},
                     json=payload,
                 )
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
-                _quota_blocked_until = time.time() + 600
-            logger.error(
-                "OpenAI generation failed: status=%s body=%s",
-                exc.response.status_code,
-                exc.response.text[:1200],
-            )
-            raise ai_error_from_http_error(exc, provider="openai") from exc
+            logger.error("Groq generation failed: status=%s body=%s", exc.response.status_code, exc.response.text[:1200])
+            raise ai_error_from_http_error(exc, provider="groq") from exc
         except httpx.RequestError as exc:
-            logger.error("OpenAI generation network error: %s", repr(exc))
-            raise ai_error_from_http_error(exc, provider="openai") from exc
+            logger.error("Groq generation network error: %s", repr(exc))
+            raise ai_error_from_http_error(exc, provider="groq") from exc
 
     def _extract_text(self, data: dict[str, Any]) -> str:
         choices = data.get("choices") or []

@@ -10,6 +10,7 @@ import httpx
 from app.core.config.settings import settings
 from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.intelligence.ai.llm.base import LLMProvider
+from app.intelligence.ai.llm.http_errors import ai_error_from_http_error
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,13 @@ class GeminiFallbackProvider(LLMProvider):
             "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
         }
         try:
-            async with httpx.AsyncClient(timeout=settings.gemini_request_timeout_seconds) as client:
+            timeout = httpx.Timeout(
+                connect=settings.llm_connect_timeout_seconds,
+                read=settings.llm_total_timeout_seconds,
+                write=settings.llm_total_timeout_seconds,
+                pool=settings.llm_total_timeout_seconds,
+            )
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, params={"key": settings.gemini_api_key}, json=payload)
                 response.raise_for_status()
                 logger.info("Gemini fallback generation succeeded.")
@@ -88,10 +95,10 @@ class GeminiFallbackProvider(LLMProvider):
                 exc.response.status_code,
                 exc.response.text[:1200],
             )
-            raise AIServiceUnavailableError(exc.response.text[:1200]) from exc
+            raise ai_error_from_http_error(exc, provider="gemini") from exc
         except httpx.RequestError as exc:
             logger.error("Gemini fallback network error: %s", repr(exc))
-            raise AIServiceUnavailableError(repr(exc)) from exc
+            raise ai_error_from_http_error(exc, provider="gemini") from exc
 
     def _extract_text(self, data: dict[str, Any]) -> str:
         candidates = data.get("candidates") or []

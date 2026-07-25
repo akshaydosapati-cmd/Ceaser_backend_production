@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from threading import Lock
+
 from sqlalchemy.orm import Session
 
 from app.models.agent import Agent
 from app.repositories.agent_repository import AgentRepository
 from app.services.agent_registry import DEFAULT_AGENT_MODULES
+
+
+_DEFAULT_AGENT_BOOTSTRAPPED: set[str] = set()
+_DEFAULT_AGENT_BOOTSTRAP_LOCK = Lock()
 
 
 class AgentService:
@@ -40,6 +46,9 @@ class AgentService:
         return agent
 
     def ensure_default_agents(self, user_id: str) -> None:
+        with _DEFAULT_AGENT_BOOTSTRAP_LOCK:
+            if user_id in _DEFAULT_AGENT_BOOTSTRAPPED:
+                return
         existing = {agent.name for agent in self.agents.list(user_id=user_id)}
         changed = False
         for agent_name, module_names in DEFAULT_AGENT_MODULES.items():
@@ -51,3 +60,5 @@ class AgentService:
             changed = True
         if changed:
             self.db.commit()
+        with _DEFAULT_AGENT_BOOTSTRAP_LOCK:
+            _DEFAULT_AGENT_BOOTSTRAPPED.add(user_id)

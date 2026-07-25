@@ -56,6 +56,7 @@ class CeaserOrchestrator:
                 role="user",
                 content=message,
                 metadata={"attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents]},
+                ingest_knowledge=False,
             )
             if conversation.title == "New Chat":
                 self.conversations.rename(conversation, self.conversations.generate_title(message))
@@ -169,6 +170,7 @@ class CeaserOrchestrator:
                 role="assistant",
                 content=final_response,
                 metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
+                ingest_knowledge=False,
             )
         return response_payload
 
@@ -231,6 +233,7 @@ class CeaserOrchestrator:
                 role="assistant",
                 content=response,
                 metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
+                ingest_knowledge=False,
             )
         return response_payload
 

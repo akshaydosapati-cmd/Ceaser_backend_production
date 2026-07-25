@@ -29,7 +29,7 @@ class ContextBuilder:
                 "description": project.description,
                 "status": project.status,
             }
-            for project in self.projects.list(user_id=user_id)
+            for project in self.projects.list(user_id=user_id)[:5]
         ]
         messages = []
         if conversation_id:

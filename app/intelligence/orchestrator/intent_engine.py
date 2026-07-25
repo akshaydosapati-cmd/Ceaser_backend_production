@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
+
 from app.intelligence.orchestrator.models import IntentType, RequestContext
 
 
 class IntentEngine:
     async def classify(self, request: RequestContext) -> IntentType:
         text = request.message.lower().strip()
+        if self._looks_like_desktop_action(text):
+            return IntentType.DESKTOP_ACTION
         if any(term in text for term in ["calendar", "event", "meeting", "schedule today", "tomorrow"]):
             return IntentType.CALENDAR_LOOKUP
         if any(term in text for term in ["weather", "temperature", "rain", "forecast"]):
@@ -25,6 +29,11 @@ class IntentEngine:
         if any(term in text for term in ["remember", "memory", "what is my name", "who am i"]):
             return IntentType.MEMORY_QUESTION
         return IntentType.GENERAL_QUESTION
+
+    def _looks_like_desktop_action(self, text: str) -> bool:
+        if any(term in text for term in ["open chrome", "open edge", "open vscode", "open vs code", "open file explorer", "open downloads", "pause music", "resume music", "take screenshot", "clipboard"]):
+            return True
+        return bool(re.search(r"\b(open|launch|start|pause|resume|play|search|find|show)\b", text) and re.search(r"\b(chrome|edge|vscode|vs code|downloads|documents|music|song|screenshot|clipboard|notepad|calculator)\b", text))
 
 
 intent_engine = IntentEngine()

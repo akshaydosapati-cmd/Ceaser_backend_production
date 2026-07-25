@@ -1,4 +1,6 @@
 from typing import Annotated
+from time import monotonic
+from threading import Lock
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,8 +14,31 @@ from app.repositories.user_repository import UserRepository
 from app.services.agent_service import AgentService
 
 
+_AUTH_CACHE_TTL_SECONDS = 300.0
+_AUTH_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
+_AUTH_CACHE_LOCK = Lock()
+
+
 def ensure_dev_user_agents(db: Session, user_id: str) -> None:
     AgentService(db).ensure_default_agents(user_id)
+
+
+def _cached_supabase_user(access_token: str) -> dict[str, str] | None:
+    now = monotonic()
+    with _AUTH_CACHE_LOCK:
+        cached = _AUTH_CACHE.get(access_token)
+        if not cached:
+            return None
+        expires_at, user = cached
+        if expires_at <= now:
+            _AUTH_CACHE.pop(access_token, None)
+            return None
+        return user
+
+
+def _store_cached_supabase_user(access_token: str, user: dict[str, str]) -> None:
+    with _AUTH_CACHE_LOCK:
+        _AUTH_CACHE[access_token] = (monotonic() + _AUTH_CACHE_TTL_SECONDS, user)
 
 
 async def get_current_user(
@@ -37,7 +62,10 @@ async def get_current_user(
 
     token = authorization.split(" ", 1)[1]
     try:
-        supabase_user = await supabase_auth.get_user(token)
+        supabase_user = _cached_supabase_user(token)
+        if supabase_user is None:
+            supabase_user = await supabase_auth.get_user(token)
+            _store_cached_supabase_user(token, {"email": supabase_user.get("email") or "", "id": supabase_user.get("id") or ""})
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session") from exc
 
