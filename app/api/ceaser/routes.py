@@ -3,7 +3,8 @@ import uuid
 from typing import Annotated
 
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
+from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -88,7 +89,7 @@ def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatReq
 
 
 @router.post("/chat/stream")
-def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
     user_id = user.id
     message = payload.message
     conversation_id = payload.conversation_id
@@ -98,19 +99,55 @@ def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, Depends
         payload_text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=True)
         return f"event: {event_type}\ndata: {payload_text}\n\n"
 
-    def stream() -> Iterator[str]:
+    async def stream() -> AsyncIterator[str]:
+        started = perf_counter()
+        stage_marks: dict[str, float] = {"start": started}
+        trace: dict[str, object] = {}
         try:
+            yield event("status", {"state": "received"})
             yield event("status", {"state": "understanding_request"})
-            yield event("status", {"state": "retrieving_context"})
-            response = CeaserOrchestrator(db).handle_message(
+            orchestrator = CeaserOrchestrator(db)
+            prepared = orchestrator.prepare_stream_request(
                 user_id=user_id,
                 message=message,
                 conversation_id=conversation_id,
                 file_ids=file_ids,
             )
+            stage_marks["prepared"] = perf_counter()
+
+            if prepared["mode"] == "direct":
+                yield event("status", {"state": "generating"})
+                yield event("token", prepared["response"])
+                response = orchestrator.finalize_stream_response(prepared, prepared["response"])
+                yield event("complete", response)
+                return
+
+            yield event("status", {"state": "retrieving_context"})
+            stage_marks["context_ready"] = perf_counter()
             yield event("status", {"state": "generating"})
-            for chunk in _chunk_text(response.get("response", "")):
+            chunks: list[str] = []
+            async for chunk in orchestrator.response_pipeline.stream(
+                prepared["effective_message"],
+                prepared["context"],
+                trace=trace,
+            ):
+                chunks.append(chunk)
                 yield event("token", chunk)
+            response_text = "".join(chunks).strip()
+            response = orchestrator.finalize_stream_response(prepared, response_text)
+            stage_marks["complete"] = perf_counter()
+            logger.info(
+                "ceaser_stream_trace user_id=%s conversation_id=%s prepare_ms=%s context_ms=%s provider=%s model=%s fallback=%s first_token_ms=%s total_ms=%s",
+                user_id,
+                conversation_id,
+                round((stage_marks.get("prepared", started) - started) * 1000, 2),
+                round((stage_marks.get("context_ready", stage_marks.get("prepared", started)) - stage_marks.get("prepared", started)) * 1000, 2),
+                trace.get("provider"),
+                trace.get("model"),
+                trace.get("fallback"),
+                trace.get("first_token_ms"),
+                round((stage_marks["complete"] - started) * 1000, 2),
+            )
             AuditService(db).record(
                 user_id=user_id,
                 action="message_created",

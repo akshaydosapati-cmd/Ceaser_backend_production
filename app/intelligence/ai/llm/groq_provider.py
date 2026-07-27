@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class GroqProvider(LLMProvider):
     endpoint = "https://api.groq.com/openai/v1/chat/completions"
+    default_model = settings.groq_model
 
     async def generate(
         self,
@@ -65,7 +66,52 @@ class GroqProvider(LLMProvider):
         input_text: str,
         model: str | None = None,
     ) -> AsyncIterator[str]:
-        yield await self.generate(instructions=instructions, input_text=input_text, model=model)
+        if not settings.groq_api_key:
+            raise AIServiceUnavailableError("GROQ_API_KEY is not configured.", retryable=False, provider="groq", category="configuration")
+        payload: dict[str, Any] = {
+            "model": model or settings.groq_model,
+            "messages": [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": input_text},
+            ],
+            "temperature": 0.3,
+            "max_tokens": settings.openai_max_tokens,
+            "stream": True,
+        }
+        try:
+            timeout = httpx.Timeout(
+                connect=settings.llm_connect_timeout_seconds,
+                read=settings.llm_total_timeout_seconds,
+                write=settings.llm_total_timeout_seconds,
+                pool=settings.llm_total_timeout_seconds,
+            )
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                    "POST",
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                        if isinstance(delta, str) and delta:
+                            yield delta
+        except httpx.HTTPStatusError as exc:
+            logger.error("Groq stream failed: status=%s body=%s", exc.response.status_code, exc.response.text[:1200])
+            raise ai_error_from_http_error(exc, provider="groq") from exc
+        except httpx.RequestError as exc:
+            logger.error("Groq stream network error: %s", repr(exc))
+            raise ai_error_from_http_error(exc, provider="groq") from exc
 
     async def _post(
         self,

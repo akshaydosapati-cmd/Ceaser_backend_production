@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from app.intelligence.ai.sync import generate_text_sync
+from collections.abc import AsyncIterator
+from typing import Any
+
+from app.intelligence.ai.sync import generate_text_sync, stream_text
 from app.services.llm.provider import LLMProvider
 
 
@@ -9,6 +12,20 @@ class ResponsePipeline:
         self.provider = provider
 
     def generate(self, message: str, context: dict) -> str:
+        instructions, context_text = self._build_prompt(message=message, context=context)
+        try:
+            return generate_text_sync(instructions=instructions, input_text=context_text)
+        except Exception:
+            if self.provider:
+                return self.provider.generate_response(message=message, context=context)
+            return "AI service is temporarily unavailable. Please try again later."
+
+    async def stream(self, message: str, context: dict, *, trace: dict[str, Any] | None = None) -> AsyncIterator[str]:
+        instructions, context_text = self._build_prompt(message=message, context=context)
+        async for chunk in stream_text(instructions=instructions, input_text=context_text, trace=trace):
+            yield chunk
+
+    def _build_prompt(self, *, message: str, context: dict) -> tuple[str, str]:
         detail_policy = self._detail_policy(message)
         instructions = (
             "You are CEASER, a personal AI operating system. Answer the user's request directly. "
@@ -28,12 +45,7 @@ class ResponsePipeline:
                 f"Agent context:\n{context.get('merged_contributions', {})}",
             ]
         )
-        try:
-            return generate_text_sync(instructions=instructions, input_text=context_text)
-        except Exception:
-            if self.provider:
-                return self.provider.generate_response(message=message, context=context)
-            return "AI service is temporarily unavailable. Please try again later."
+        return instructions, context_text
 
     def _detail_policy(self, message: str) -> str:
         normalized = message.lower()

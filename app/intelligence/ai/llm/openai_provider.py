@@ -19,6 +19,7 @@ _quota_blocked_until = 0.0
 
 class OpenAIProvider(LLMProvider):
     endpoint = "https://api.openai.com/v1/chat/completions"
+    default_model = settings.openai_model
 
     async def generate(
         self,
@@ -68,7 +69,62 @@ class OpenAIProvider(LLMProvider):
         input_text: str,
         model: str | None = None,
     ) -> AsyncIterator[str]:
-        yield await self.generate(instructions=instructions, input_text=input_text, model=model)
+        if not settings.openai_api_key:
+            logger.error("OpenAI stream blocked: OPENAI_API_KEY is not configured.")
+            raise AIServiceUnavailableError("OPENAI_API_KEY is not configured.")
+        global _quota_blocked_until
+        if time.time() < _quota_blocked_until:
+            raise AIServiceUnavailableError("OpenAI quota circuit is temporarily open.")
+        timeout = httpx.Timeout(
+            connect=settings.llm_connect_timeout_seconds,
+            read=settings.llm_total_timeout_seconds,
+            write=settings.llm_total_timeout_seconds,
+            pool=settings.llm_total_timeout_seconds,
+        )
+        payload: dict[str, Any] = {
+            "model": model or settings.openai_model,
+            "messages": [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": input_text},
+            ],
+            "temperature": settings.openai_temperature,
+            "max_tokens": settings.openai_max_tokens,
+            "stream": True,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                    "POST",
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                        if isinstance(delta, str) and delta:
+                            yield delta
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
+                _quota_blocked_until = time.time() + 600
+            logger.error(
+                "OpenAI stream failed: status=%s body=%s",
+                exc.response.status_code,
+                exc.response.text[:1200],
+            )
+            raise ai_error_from_http_error(exc, provider="openai") from exc
+        except httpx.RequestError as exc:
+            logger.error("OpenAI stream network error: %s", repr(exc))
+            raise ai_error_from_http_error(exc, provider="openai") from exc
 
     async def _post(
         self,

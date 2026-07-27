@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import asyncio
+from typing import Any
 from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -164,6 +165,185 @@ class CeaserOrchestrator:
             },
             "response": final_response,
         }
+        if conversation:
+            self.conversations.create_message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=final_response,
+                metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
+                ingest_knowledge=False,
+            )
+        return response_payload
+
+    def prepare_stream_request(self, user_id: str, message: str, conversation_id: str | None = None, file_ids: list[str] | None = None) -> dict[str, Any]:
+        attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
+        effective_message = message
+        if attached_documents:
+            names = ", ".join(document["name"] for document in attached_documents)
+            effective_message = f"{message}\n\nAttached document(s): {names}"
+
+        conversation = self._get_conversation(conversation_id)
+        conversation_context = self._conversation_context(conversation)
+        effective_message = self._contextualize_follow_up(effective_message, conversation_context)
+
+        if conversation:
+            self.conversations.create_message(
+                conversation_id=conversation.id,
+                role="user",
+                content=message,
+                metadata={"attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents]},
+                ingest_knowledge=False,
+            )
+            if conversation.title == "New Chat":
+                self.conversations.rename(conversation, self.conversations.generate_title(message))
+
+        calendar_response = self._maybe_calendar_response(user_id=user_id, message=effective_message)
+        if calendar_response:
+            return {
+                "mode": "direct",
+                "user_id": user_id,
+                "conversation": conversation,
+                "conversation_id": conversation.id if conversation else conversation_id,
+                "conversation_context": conversation_context,
+                "response": calendar_response,
+                "selected_agents": ["Alex"],
+                "workflow_type": "calendar_lookup",
+                "summary": "Calendar lookup completed.",
+            }
+
+        integration_response = self._maybe_integration_response(user_id=user_id, message=effective_message)
+        if integration_response:
+            return {
+                "mode": "direct",
+                "user_id": user_id,
+                "conversation": conversation,
+                "conversation_id": conversation.id if conversation else conversation_id,
+                "conversation_context": conversation_context,
+                "response": integration_response,
+                "selected_agents": ["Alex"],
+                "workflow_type": "integration_lookup",
+                "summary": "Integration lookup completed.",
+            }
+
+        identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message)
+        if identity_memory_response:
+            return {
+                "mode": "direct",
+                "user_id": user_id,
+                "conversation": conversation,
+                "conversation_id": conversation.id if conversation else conversation_id,
+                "conversation_context": conversation_context,
+                "response": identity_memory_response,
+                "selected_agents": ["Alex"],
+                "workflow_type": "memory_identity",
+                "summary": "Identity memory updated.",
+            }
+
+        selected_agent_names: list[str] = []
+        workflow = None
+        research_result = None
+        if self._should_run_heavy_pipeline(effective_message):
+            workflow = self.workflow_orchestrator.run(
+                user_id=user_id,
+                message=effective_message,
+                conversation_id=conversation_id,
+                file_ids=file_ids or [],
+            )
+            selected_agent_names = workflow.selected_agents
+            if self._should_run_research(effective_message, selected_agent_names):
+                research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names)
+        else:
+            selected_agent_names = self._default_stream_agents(effective_message)
+
+        memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        knowledge_context = self._knowledge_context(
+            user_id=user_id,
+            message=effective_message,
+            conversation_id=conversation.id if conversation else conversation_id,
+        )
+        captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
+        return {
+            "mode": "generate",
+            "user_id": user_id,
+            "message": message,
+            "effective_message": effective_message,
+            "conversation": conversation,
+            "conversation_id": conversation.id if conversation else conversation_id,
+            "conversation_context": conversation_context,
+            "attached_documents": attached_documents,
+            "selected_agents": selected_agent_names,
+            "workflow": workflow,
+            "research_result": research_result,
+            "memories": memories,
+            "knowledge_context": knowledge_context,
+            "captured_memories": captured_memories,
+            "context": {
+                "scope": {"name": "CEASER", "type": "personal_ai_os"},
+                "current_message": effective_message,
+                "memories": memories,
+                "conversation": conversation_context["messages"],
+                "previous_research": conversation_context["previous_research"],
+                "projects": [],
+                "documents": attached_documents,
+                "knowledge_context": knowledge_context,
+                "merged_contributions": {
+                    "selected_agents": selected_agent_names,
+                    "contributions": workflow.contributions if workflow else [],
+                    "summary": workflow.result_summary if workflow else "",
+                    "workflow_response": workflow.final_response if workflow else "",
+                },
+                "research_result": research_result.model_dump() if research_result else None,
+            },
+        }
+
+    def finalize_stream_response(self, prepared: dict[str, Any], final_response: str) -> dict[str, Any]:
+        if prepared["mode"] == "direct":
+            return self._direct_response(
+                user_id=prepared["user_id"],
+                conversation=prepared["conversation"],
+                conversation_id=prepared["conversation_id"],
+                conversation_context=prepared["conversation_context"],
+                response=prepared["response"],
+                selected_agents=prepared["selected_agents"],
+                workflow_type=prepared["workflow_type"],
+                summary=prepared["summary"],
+            )
+
+        workflow = prepared.get("workflow")
+        captured_response_memories = self.memory_capture.capture_interaction(
+            user_id=prepared["user_id"],
+            user_message=prepared["message"],
+            assistant_response=final_response,
+        )
+        response_payload = {
+            "scope": "personal_ai_os",
+            "conversation_id": prepared["conversation_id"],
+            "selected_agents": prepared["selected_agents"],
+            "contributions": workflow.contributions if workflow else [],
+            "contribution_summary": workflow.result_summary if workflow else "Response generated.",
+            "memories_used": prepared["memories"],
+            "research": prepared["research_result"].model_dump() if prepared.get("research_result") else None,
+            "workflow": {
+                "id": workflow.workflow_id,
+                "type": workflow.workflow_type,
+                "status": workflow.status,
+                "steps": workflow.steps,
+                "summary": workflow.result_summary,
+            } if workflow else None,
+            "context_summary": {
+                "user_id": prepared["user_id"],
+                "scope_name": "CEASER",
+                "memory_count": len(prepared["memories"]),
+                "project_count": 0,
+                "conversation_message_count": len(prepared["conversation_context"]["messages"]),
+                "enabled_agent_count": len(prepared["selected_agents"]),
+                "captured_memory_count": len(prepared["captured_memories"]) + len(captured_response_memories),
+                "attached_document_count": len(prepared["attached_documents"]),
+                "workflow_id": workflow.workflow_id if workflow else None,
+            },
+            "response": final_response,
+        }
+        conversation = prepared.get("conversation")
         if conversation:
             self.conversations.create_message(
                 conversation_id=conversation.id,
@@ -517,6 +697,45 @@ class CeaserOrchestrator:
         if "Nova" not in selected_agent_names:
             return None
         return self.research_engine.research(query)
+
+    def _should_run_heavy_pipeline(self, message: str) -> bool:
+        normalized = message.lower()
+        return any(
+            term in normalized
+            for term in [
+                "create ",
+                "generate ",
+                "build ",
+                "draft ",
+                "write ",
+                "report",
+                "proposal",
+                "business plan",
+                "pitch deck",
+                "document",
+                "pdf",
+                "workflow",
+                "automation",
+            ]
+        )
+
+    def _should_run_research(self, message: str, selected_agents: list[str]) -> bool:
+        normalized = message.lower()
+        explicit_research = any(
+            term in normalized
+            for term in ["research", "latest", "news", "sources", "citations", "web", "internet", "competitor", "market"]
+        )
+        return explicit_research and "Nova" in selected_agents
+
+    def _default_stream_agents(self, message: str) -> list[str]:
+        normalized = message.lower()
+        if any(term in normalized for term in ["business", "startup", "strategy", "market"]):
+            return ["Zeus"]
+        if any(term in normalized for term in ["study", "learn", "exam", "notes"]):
+            return ["Alex"]
+        if any(term in normalized for term in ["content", "email", "post", "caption"]):
+            return ["Friday"]
+        return ["Alex"]
 
     def _research_query(self, message: str, conversation_context: dict | None = None) -> str:
         normalized = message.strip()
