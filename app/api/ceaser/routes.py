@@ -131,10 +131,12 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 prepared.get("observability", {}).get("retrieval_time_ms"),
             )
             logger.info(
-                "ceaser_stream_stage request_id=%s stage=context_complete context_tokens=%s prepare_ms=%s",
+                "ceaser_stream_stage request_id=%s stage=context_complete context_tokens=%s prepare_ms=%s retrieval_scope=%s retrieval_sources=%s",
                 request_id,
                 prepared.get("observability", {}).get("context_tokens"),
                 prepared.get("observability", {}).get("prepare_ms"),
+                prepared.get("observability", {}).get("retrieval_scope"),
+                prepared.get("observability", {}).get("retrieval_sources"),
             )
 
             if prepared["mode"] == "direct":

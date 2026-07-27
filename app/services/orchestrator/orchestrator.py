@@ -287,6 +287,8 @@ class CeaserOrchestrator:
                 "retrieval_time_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
                 "intent_ms": knowledge_context.get("_intent_ms"),
                 "context_tokens": knowledge_context.get("_context_tokens"),
+                "retrieval_scope": knowledge_context.get("retrieval_scope"),
+                "retrieval_sources": knowledge_context.get("retrieval_sources", []),
             },
             "context": {
                 "scope": {"name": "CEASER", "type": "personal_ai_os"},
@@ -364,6 +366,8 @@ class CeaserOrchestrator:
                 "retrieval_time_ms": prepared.get("stream_trace", {}).get("retrieval_time_ms") or prepared.get("observability", {}).get("retrieval_time_ms"),
                 "provider_connect_ms": prepared.get("stream_trace", {}).get("provider_connect_ms"),
                 "provider_generation_ms": prepared.get("stream_trace", {}).get("provider_generation_ms"),
+                "retrieval_scope": prepared.get("observability", {}).get("retrieval_scope"),
+                "retrieval_sources": prepared.get("observability", {}).get("retrieval_sources", []),
             },
             "response": final_response,
         }
@@ -395,6 +399,8 @@ class CeaserOrchestrator:
                 "output_format": plan.output_format,
                 "evidence": package.evidence_text,
                 "source_count": len(package.items),
+                "retrieval_scope": plan.retrieval_scope,
+                "retrieval_sources": plan.retrieval_sources,
                 "_intent_ms": round((intent_finished - intent_started) * 1000, 2),
                 "_retrieval_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
                 "_context_total_ms": round((perf_counter() - started) * 1000, 2),
@@ -404,7 +410,14 @@ class CeaserOrchestrator:
         try:
             return self._run_async_blocking(build())
         except Exception:
-            return {"intent": "unavailable", "output_format": "chat", "evidence": "", "source_count": 0}
+            return {
+                "intent": "unavailable",
+                "output_format": "chat",
+                "evidence": "",
+                "source_count": 0,
+                "retrieval_scope": "mixed",
+                "retrieval_sources": [],
+            }
 
     def _run_async_blocking(self, coro):
         try:

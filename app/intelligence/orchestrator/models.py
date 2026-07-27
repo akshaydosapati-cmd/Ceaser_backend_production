@@ -57,4 +57,8 @@ class RetrievalPlan:
     needs_generation: bool
     output_format: str
     requires_confirmation: bool = False
+    retrieval_scope: str = "mixed"
 
+    @property
+    def retrieval_sources(self) -> list[str]:
+        return [provider.provider for provider in self.providers]

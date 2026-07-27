@@ -10,11 +10,13 @@ class IntentEngine:
         text = request.message.lower().strip()
         if self._looks_like_desktop_action(text):
             return IntentType.DESKTOP_ACTION
+        if any(term in text for term in ["what did we decide", "what did we decide about", "previous conversation", "previous chat", "last time we discussed", "what is my name", "who am i", "remember", "memory"]):
+            return IntentType.MEMORY_QUESTION
         if any(term in text for term in ["calendar", "event", "meeting", "schedule today", "tomorrow"]):
             return IntentType.CALENDAR_LOOKUP
         if any(term in text for term in ["weather", "temperature", "rain", "forecast"]):
             return IntentType.RESEARCH
-        if any(term in text for term in ["summarize this file", "summarize the file", "summarize pdf", "summarize document"]):
+        if any(term in text for term in ["summarize this file", "summarize the file", "summarize pdf", "summarize document", "uploaded document", "uploaded file", "this pdf", "this document"]):
             return IntentType.FILE_SUMMARY
         if any(term in text for term in ["find file", "open file", "latest pdf", "in downloads", "in documents"]):
             return IntentType.FILE_LOOKUP
@@ -26,8 +28,6 @@ class IntentEngine:
             return IntentType.EMAIL_DRAFT
         if request.project_id or "project" in text:
             return IntentType.PROJECT_QUESTION
-        if any(term in text for term in ["remember", "memory", "what is my name", "who am i"]):
-            return IntentType.MEMORY_QUESTION
         return IntentType.GENERAL_QUESTION
 
     def _looks_like_desktop_action(self, text: str) -> bool:

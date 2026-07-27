@@ -44,6 +44,16 @@ class KnowledgeEngine:
 
     async def retrieve(self, *, request: RequestContext, plan: RetrievalPlan) -> list[ContextItem]:
         started = perf_counter()
+        if not plan.providers:
+            self.repository.log_retrieval(
+                user_id=request.user_id,
+                intent=plan.intent.value,
+                provider_names=[],
+                chunk_ids=[],
+                source_ids=[],
+                latency_ms=round((perf_counter() - started) * 1000),
+            )
+            return []
         tasks = [self._retrieve_provider(request=request, provider_plan=provider_plan) for provider_plan in plan.providers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         items: list[ContextItem] = []
