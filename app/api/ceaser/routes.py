@@ -89,30 +89,41 @@ def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatReq
 
 @router.post("/chat/stream")
 def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    user_id = user.id
+    message = payload.message
+    conversation_id = payload.conversation_id
+    file_ids = list(payload.file_ids)
+
     def event(event_type: str, data: dict | str) -> str:
         payload_text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=True)
         return f"event: {event_type}\ndata: {payload_text}\n\n"
 
     def stream() -> Iterator[str]:
-        yield event("status", {"state": "understanding_request"})
-        yield event("status", {"state": "retrieving_context"})
-        response = CeaserOrchestrator(db).handle_message(
-            user_id=user.id,
-            message=payload.message,
-            conversation_id=payload.conversation_id,
-            file_ids=payload.file_ids,
-        )
-        yield event("status", {"state": "generating"})
-        for chunk in _chunk_text(response.get("response", "")):
-            yield event("token", chunk)
-        AuditService(db).record(
-            user_id=user.id,
-            action="message_created",
-            resource_type="conversation",
-            resource_id=payload.conversation_id,
-            metadata={"selected_agents": response.get("selected_agents", []), "memory_count": len(response.get("memories_used", []))},
-        )
-        yield event("complete", response)
+        try:
+            yield event("status", {"state": "understanding_request"})
+            yield event("status", {"state": "retrieving_context"})
+            response = CeaserOrchestrator(db).handle_message(
+                user_id=user_id,
+                message=message,
+                conversation_id=conversation_id,
+                file_ids=file_ids,
+            )
+            yield event("status", {"state": "generating"})
+            for chunk in _chunk_text(response.get("response", "")):
+                yield event("token", chunk)
+            AuditService(db).record(
+                user_id=user_id,
+                action="message_created",
+                resource_type="conversation",
+                resource_id=conversation_id,
+                metadata={"selected_agents": response.get("selected_agents", []), "memory_count": len(response.get("memories_used", []))},
+            )
+            yield event("complete", response)
+        except ValueError as exc:
+            yield event("error", {"message": str(exc)})
+        except Exception:
+            logger.exception("ceaser_chat_stream_failed user_id=%s conversation_id=%s", user_id, conversation_id)
+            yield event("error", {"message": "We couldn't complete your request. Please try again."})
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

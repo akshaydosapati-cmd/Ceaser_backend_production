@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.repositories.file_repository import FileRepository
+from app.services.integrations.integration_context_service import IntegrationContextService
 from app.services.orchestrator.context_builder import ContextBuilder
 from app.services.orchestrator.memory_retriever import MemoryRetriever
 from app.services.orchestrator.user_context_resolver import UserContextResolver
@@ -15,6 +16,7 @@ class WorkflowContext:
         self.memories = MemoryRetriever(db)
         self.context_builder = ContextBuilder(db)
         self.files = FileRepository(db)
+        self.integrations = IntegrationContextService(db)
 
     def build(self, *, user_id: str, message: str, selected_agents: list[dict], conversation_id: str | None = None, file_ids: list[str] | None = None) -> dict:
         user_context = self.user_context.resolve(user_id)
