@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.intelligence.knowledge.models import ContextItem, ContextPackage
+from app.intelligence.knowledge.models import ContextKind
 from app.intelligence.orchestrator.models import RequestContext
 
 
@@ -14,7 +15,7 @@ class ContextBuilder:
         deduped: list[ContextItem] = []
         seen_keys: set[tuple[str, str | None]] = set()
         for item in sorted_items:
-            key = (item.provider, item.source_id or item.id)
+            key = (item.provider, item.chunk_id or item.id) if item.kind == ContextKind.DOCUMENT_CHUNK else (item.provider, item.source_id or item.id)
             if key in seen_keys:
                 continue
             seen_keys.add(key)

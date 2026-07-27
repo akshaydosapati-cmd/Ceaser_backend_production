@@ -24,7 +24,9 @@ from app.services.workflows import WorkflowOrchestrator
 from app.services.integrations import IntegrationManager
 from app.intelligence.knowledge.context_builder import context_builder as intelligence_context_builder
 from app.intelligence.knowledge.engine import KnowledgeEngine
+from app.intelligence.knowledge.repository import KnowledgeRepository
 from app.intelligence.orchestrator.intent_engine import intent_engine
+from app.intelligence.orchestrator.models import IntentType
 from app.intelligence.orchestrator.models import RequestContext
 from app.intelligence.orchestrator.retrieval_planner import retrieval_planner
 
@@ -179,11 +181,20 @@ class CeaserOrchestrator:
 
     def prepare_stream_request(self, user_id: str, message: str, conversation_id: str | None = None, file_ids: list[str] | None = None) -> dict[str, Any]:
         started = perf_counter()
-        attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
+        request_trace: dict[str, Any] = {}
+        attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [], trace=request_trace)
         effective_message = message
         if attached_documents:
             names = ", ".join(document["name"] for document in attached_documents)
             effective_message = f"{message}\n\nAttached document(s): {names}"
+        is_file_summary_request = self._looks_like_file_summary_request(effective_message, attached_documents)
+        if is_file_summary_request:
+            attached_documents = self._attached_documents(
+                user_id=user_id,
+                file_ids=file_ids or [],
+                include_content=False,
+                trace=request_trace,
+            )
 
         conversation = self._get_conversation(conversation_id)
         conversation_context = self._conversation_context(conversation)
@@ -259,14 +270,34 @@ class CeaserOrchestrator:
             selected_agent_names = self._default_stream_agents(effective_message)
 
         retrieval_started = perf_counter()
-        memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        memories = [] if is_file_summary_request else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         knowledge_context = self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
+            file_ids=file_ids or [],
         )
         retrieval_finished = perf_counter()
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
+        observability = {
+            "prepare_ms": round((perf_counter() - started) * 1000, 2),
+            "retrieval_time_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
+            "intent_ms": knowledge_context.get("_intent_ms"),
+            "context_tokens": knowledge_context.get("_context_tokens"),
+            "retrieval_scope": knowledge_context.get("retrieval_scope"),
+            "retrieval_sources": knowledge_context.get("retrieval_sources", []),
+            "file_lookup_ms": request_trace.get("file_lookup_ms") or knowledge_context.get("file_lookup_ms"),
+            "permission_check_ms": request_trace.get("permission_check_ms"),
+            "document_metadata_load_ms": knowledge_context.get("document_metadata_load_ms"),
+            "chunk_load_ms": knowledge_context.get("chunk_load_ms"),
+            "vector_search_ms": knowledge_context.get("vector_search_ms"),
+            "keyword_search_ms": knowledge_context.get("keyword_search_ms"),
+            "rerank_ms": knowledge_context.get("rerank_ms"),
+            "context_build_ms": knowledge_context.get("context_build_ms"),
+            "prompt_tokens": knowledge_context.get("prompt_tokens"),
+            "selected_chunks": knowledge_context.get("selected_chunks"),
+            "cache_hit": knowledge_context.get("cache_hit"),
+        }
         return {
             "mode": "generate",
             "user_id": user_id,
@@ -282,14 +313,7 @@ class CeaserOrchestrator:
             "memories": memories,
             "knowledge_context": knowledge_context,
             "captured_memories": captured_memories,
-            "observability": {
-                "prepare_ms": round((perf_counter() - started) * 1000, 2),
-                "retrieval_time_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
-                "intent_ms": knowledge_context.get("_intent_ms"),
-                "context_tokens": knowledge_context.get("_context_tokens"),
-                "retrieval_scope": knowledge_context.get("retrieval_scope"),
-                "retrieval_sources": knowledge_context.get("retrieval_sources", []),
-            },
+            "observability": observability,
             "context": {
                 "scope": {"name": "CEASER", "type": "personal_ai_os"},
                 "current_message": effective_message,
@@ -368,6 +392,17 @@ class CeaserOrchestrator:
                 "provider_generation_ms": prepared.get("stream_trace", {}).get("provider_generation_ms"),
                 "retrieval_scope": prepared.get("observability", {}).get("retrieval_scope"),
                 "retrieval_sources": prepared.get("observability", {}).get("retrieval_sources", []),
+                "file_lookup_ms": prepared.get("observability", {}).get("file_lookup_ms"),
+                "permission_check_ms": prepared.get("observability", {}).get("permission_check_ms"),
+                "document_metadata_load_ms": prepared.get("observability", {}).get("document_metadata_load_ms"),
+                "chunk_load_ms": prepared.get("observability", {}).get("chunk_load_ms"),
+                "vector_search_ms": prepared.get("observability", {}).get("vector_search_ms"),
+                "keyword_search_ms": prepared.get("observability", {}).get("keyword_search_ms"),
+                "rerank_ms": prepared.get("observability", {}).get("rerank_ms"),
+                "context_build_ms": prepared.get("observability", {}).get("context_build_ms"),
+                "prompt_tokens": prepared.get("stream_trace", {}).get("prompt_tokens") or prepared.get("observability", {}).get("prompt_tokens"),
+                "selected_chunks": prepared.get("observability", {}).get("selected_chunks"),
+                "cache_hit": prepared.get("observability", {}).get("cache_hit"),
             },
             "response": final_response,
         }
@@ -382,10 +417,21 @@ class CeaserOrchestrator:
             )
         return response_payload
 
-    def _knowledge_context(self, *, user_id: str, message: str, conversation_id: str | None) -> dict:
+    def _knowledge_context(self, *, user_id: str, message: str, conversation_id: str | None, file_ids: list[str] | None = None) -> dict:
         async def build() -> dict:
             started = perf_counter()
-            request = RequestContext(user_id=user_id, message=message, conversation_id=conversation_id, interaction_mode="chat")
+            repository = KnowledgeRepository(self.db)
+            document_metadata_started = perf_counter()
+            source = repository.find_source_by_file_id(user_id=user_id, file_id=file_ids[0]) if file_ids else None
+            request = RequestContext(
+                user_id=user_id,
+                message=message,
+                conversation_id=conversation_id,
+                interaction_mode="chat",
+                source_id=source.id if source else None,
+                selected_file_ids=file_ids or [],
+                metadata={"rag_trace": {}},
+            )
             intent_started = perf_counter()
             intent = await intent_engine.classify(request)
             intent_finished = perf_counter()
@@ -393,7 +439,10 @@ class CeaserOrchestrator:
             retrieval_started = perf_counter()
             items = await KnowledgeEngine(self.db).retrieve(request=request, plan=plan)
             retrieval_finished = perf_counter()
-            package = intelligence_context_builder.build(request=request, items=items)
+            context_started = perf_counter()
+            token_budget = 1800 if intent == IntentType.FILE_SUMMARY else 6000
+            package = intelligence_context_builder.build(request=request, items=items, token_budget=token_budget)
+            rag_trace = request.metadata.get("rag_trace", {})
             return {
                 "intent": intent.value,
                 "output_format": plan.output_format,
@@ -405,6 +454,16 @@ class CeaserOrchestrator:
                 "_retrieval_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
                 "_context_total_ms": round((perf_counter() - started) * 1000, 2),
                 "_context_tokens": max(1, round(len(package.evidence_text or "") / 4)),
+                "document_metadata_load_ms": round((perf_counter() - document_metadata_started) * 1000, 2),
+                "file_lookup_ms": rag_trace.get("file_lookup_ms"),
+                "chunk_load_ms": rag_trace.get("chunk_load_ms"),
+                "vector_search_ms": rag_trace.get("vector_search_ms"),
+                "keyword_search_ms": rag_trace.get("keyword_search_ms"),
+                "rerank_ms": rag_trace.get("rerank_ms"),
+                "context_build_ms": round((perf_counter() - context_started) * 1000, 2),
+                "prompt_tokens": max(1, round(len(package.evidence_text or "") / 4)),
+                "selected_chunks": rag_trace.get("selected_chunks", len(package.items)),
+                "cache_hit": rag_trace.get("cache_hit", False),
             }
 
         try:
@@ -711,14 +770,52 @@ class CeaserOrchestrator:
         except ValueError:
             return "All day"
 
-    def _attached_documents(self, user_id: str, file_ids: list[str]) -> list[dict]:
+    def _attached_documents(
+        self,
+        user_id: str,
+        file_ids: list[str],
+        *,
+        include_content: bool = True,
+        trace: dict[str, Any] | None = None,
+    ) -> list[dict]:
         documents = []
+        file_lookup_started = perf_counter()
+        permission_started = perf_counter()
         for file_id in file_ids[:3]:
             file = self.files.get(file_id)
             if not file or file.user_id != user_id:
                 continue
-            documents.append({"id": file.id, "name": file.name, "file_type": file.file_type, "metadata": file.extraction_metadata, "content": file.extracted_content[:20000]})
+            document_payload = {
+                "id": file.id,
+                "name": file.name,
+                "file_type": file.file_type,
+                "metadata": file.extraction_metadata,
+            }
+            if include_content:
+                document_payload["content"] = file.extracted_content[:4000]
+            documents.append(document_payload)
+        if trace is not None:
+            trace["file_lookup_ms"] = round((perf_counter() - file_lookup_started) * 1000, 2)
+            trace["permission_check_ms"] = round((perf_counter() - permission_started) * 1000, 2)
         return documents
+
+    def _looks_like_file_summary_request(self, message: str, attached_documents: list[dict]) -> bool:
+        if not attached_documents:
+            return False
+        normalized = message.lower()
+        terms = (
+            "summarize the uploaded document",
+            "summarize the uploaded file",
+            "summarize this document",
+            "summarize this file",
+            "summarize the document",
+            "summarize the file",
+            "uploaded document",
+            "uploaded file",
+            "this pdf",
+            "this document",
+        )
+        return any(term in normalized for term in terms)
 
     def _get_conversation(self, conversation_id: str | None) -> Conversation | None:
         if not conversation_id:

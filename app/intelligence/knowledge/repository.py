@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from time import perf_counter
 
 from sqlalchemy import or_, text
@@ -24,6 +25,28 @@ class KnowledgeRepository:
             .limit(limit)
             .all()
         )
+
+    def find_source_by_file_id(self, *, user_id: str, file_id: str) -> KnowledgeSource | None:
+        try:
+            source_id = self.db.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM knowledge_sources
+                    WHERE user_id = :user_id
+                      AND deleted_at IS NULL
+                      AND status <> 'deleted'
+                      AND extra_metadata->>'file_id' = :file_id
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": user_id, "file_id": file_id},
+            ).scalar()
+            return self.db.get(KnowledgeSource, source_id) if source_id else None
+        except Exception:
+            self.db.rollback()
+            return None
 
     def ingest_text(
         self,
@@ -149,22 +172,38 @@ class KnowledgeRepository:
         project_id: str | None = None,
         source_id: str | None = None,
         limit: int = 8,
+        trace: dict | None = None,
     ) -> list[KnowledgeChunk]:
-        keyword = self.keyword_search_chunks(
+        keyword_started = perf_counter()
+        keyword_task = asyncio.to_thread(
+            self.keyword_search_chunks,
             user_id=user_id,
             query=query,
             project_id=project_id,
             source_id=source_id,
             limit=limit,
         )
-        vector = await self.vector_search_chunks(
-            user_id=user_id,
-            query=query,
-            project_id=project_id,
-            source_id=source_id,
-            limit=limit,
+        vector_started = perf_counter()
+        keyword, vector = await asyncio.gather(
+            keyword_task,
+            self.vector_search_chunks(
+                user_id=user_id,
+                query=query,
+                project_id=project_id,
+                source_id=source_id,
+                limit=limit,
+            ),
         )
-        return self._rank_fuse([keyword, vector], limit=limit)
+        if trace is not None:
+            trace["keyword_search_ms"] = round((perf_counter() - keyword_started) * 1000, 2)
+            trace["vector_search_ms"] = round((perf_counter() - vector_started) * 1000, 2)
+        rerank_started = perf_counter()
+        fused = self._rank_fuse([keyword, vector], limit=limit)
+        if trace is not None:
+            trace["rerank_ms"] = round((perf_counter() - rerank_started) * 1000, 2)
+            trace["selected_chunks"] = len(fused)
+            trace["cache_hit"] = False
+        return fused
 
     async def vector_search_chunks(
         self,
@@ -218,6 +257,30 @@ class KnowledgeRepository:
         except Exception:
             self.db.rollback()
             return []
+
+    def load_source_chunks(
+        self,
+        *,
+        user_id: str,
+        source_id: str,
+        limit: int = 6,
+        trace: dict | None = None,
+    ) -> list[KnowledgeChunk]:
+        chunk_started = perf_counter()
+        chunks = (
+            self._base_chunk_query(user_id=user_id, source_id=source_id)
+            .order_by(KnowledgeChunk.chunk_index.asc())
+            .limit(limit)
+            .all()
+        )
+        if trace is not None:
+            trace["chunk_load_ms"] = round((perf_counter() - chunk_started) * 1000, 2)
+            trace["vector_search_ms"] = 0.0
+            trace["keyword_search_ms"] = 0.0
+            trace["rerank_ms"] = 0.0
+            trace["selected_chunks"] = len(chunks)
+            trace["cache_hit"] = True
+        return chunks
 
     def _rank_fuse(self, ranked_lists: list[list[KnowledgeChunk]], *, limit: int) -> list[KnowledgeChunk]:
         scores: dict[str, float] = {}

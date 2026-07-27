@@ -31,7 +31,22 @@ class RetrievalPlanner:
                 output_format="calendar_events",
                 retrieval_scope="integrations",
             )
-        if intent in {IntentType.FILE_SUMMARY, IntentType.DOCUMENT_GENERATION, IntentType.PROJECT_QUESTION, IntentType.MEMORY_QUESTION}:
+        if intent == IntentType.FILE_SUMMARY:
+            return RetrievalPlan(
+                intent=intent,
+                providers=[
+                    ProviderPlan(
+                        provider="documents",
+                        query=query,
+                        filters={"project_id": request.project_id, "source_id": request.source_id},
+                        limit=6,
+                    )
+                ],
+                needs_generation=True,
+                output_format="chat",
+                retrieval_scope="file_rag",
+            )
+        if intent in {IntentType.DOCUMENT_GENERATION, IntentType.PROJECT_QUESTION, IntentType.MEMORY_QUESTION}:
             scope = "memory" if intent == IntentType.MEMORY_QUESTION else "project" if intent == IntentType.PROJECT_QUESTION else "file_rag"
             return RetrievalPlan(
                 intent=intent,
