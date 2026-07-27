@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 
+from app.core.cache import ttl_cache
 from app.core.config.settings import settings
 from app.services.news.schemas import NewsArticle, NewsBrief
 
@@ -71,6 +72,11 @@ class NewsApiProvider:
         if not self.configured():
             return NewsBrief(query=query, mode=mode, provider=self.provider_name, articles=[], error="NewsAPI.org is not configured.")
 
+        cache_key = f"newsapi:{path}:{mode}:{query}:{sorted(params.items())}"
+        cached = ttl_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         url = f"{(settings.news_api_base_url or self.default_base_url).rstrip('/')}/{path.lstrip('/')}"
         try:
             with httpx.Client(timeout=20) as client:
@@ -85,7 +91,9 @@ class NewsApiProvider:
         if payload.get("status") == "error":
             return NewsBrief(query=query, mode=mode, provider=self.provider_name, articles=[], error=str(payload.get("message") or "NewsAPI returned an error."))
         articles = self._extract_articles(payload)
-        return NewsBrief(query=query, mode=mode, provider=self.provider_name, articles=articles[: settings.news_max_items])
+        brief = NewsBrief(query=query, mode=mode, provider=self.provider_name, articles=articles[: settings.news_max_items])
+        ttl_cache.set(cache_key, brief, ttl_seconds=300)
+        return brief
 
     def _extract_articles(self, payload: Any) -> list[NewsArticle]:
         items = payload.get("articles") if isinstance(payload, dict) else []

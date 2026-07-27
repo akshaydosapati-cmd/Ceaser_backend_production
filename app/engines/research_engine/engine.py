@@ -13,7 +13,7 @@ class ResearchEngine:
     def research(self, query: str) -> ResearchResult:
         sources = self.source_collector.collect_sources(query=query)
         citations = self.citation_builder.build(sources)
-        key_findings = [source.snippet for source in sources if source.snippet][:5]
+        key_findings = [source.excerpt or source.snippet for source in sources if source.excerpt or source.snippet][:5]
         summary = self._summary(query=query, key_findings=key_findings, source_count=len(sources))
         return ResearchResult(
             query=query,

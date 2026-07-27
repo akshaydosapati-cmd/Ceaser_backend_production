@@ -7,6 +7,8 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import httpx
 
+from app.core.cache import ttl_cache
+
 
 class SearchProvider(ABC):
     @abstractmethod
@@ -16,6 +18,10 @@ class SearchProvider(ABC):
 
 class DuckDuckGoSearchProvider(SearchProvider):
     def search(self, query: str, limit: int = 6) -> list[dict]:
+        cache_key = f"research:ddg:{query.strip().lower()}:{limit}"
+        cached = ttl_cache.get(cache_key)
+        if cached is not None:
+            return cached
         url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
         try:
             with httpx.Client(timeout=12, follow_redirects=True) as client:
@@ -47,9 +53,9 @@ class DuckDuckGoSearchProvider(SearchProvider):
                 )
             if len(sources) >= limit:
                 break
-        if not sources:
-            sources = self._search_html(query=query, limit=limit)
-        return sources[:limit]
+        result = sources[:limit]
+        ttl_cache.set(cache_key, result, ttl_seconds=300)
+        return result
 
     def _flatten_related(self, items: list[dict]) -> list[dict]:
         flattened = []
@@ -61,6 +67,8 @@ class DuckDuckGoSearchProvider(SearchProvider):
         return flattened
 
     def _search_html(self, query: str, limit: int) -> list[dict]:
+        # Kept for explicit future debugging only. Normal CEASER research uses approved/API-style retrieval above.
+        return []
         url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
         try:
             with httpx.Client(timeout=12, follow_redirects=True, headers={"User-Agent": "CEASER Research"}) as client:

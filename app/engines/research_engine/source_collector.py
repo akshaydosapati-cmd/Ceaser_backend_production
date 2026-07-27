@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+from app.engines.research_engine.page_extractor import PageExtractor
 from app.engines.research_engine.schemas import ResearchSource
 from app.engines.research_engine.search_provider import DuckDuckGoSearchProvider, SearchProvider
 
 
 class SourceCollector:
-    def __init__(self, provider: SearchProvider | None = None):
+    def __init__(self, provider: SearchProvider | None = None, page_extractor: PageExtractor | None = None):
         self.provider = provider or DuckDuckGoSearchProvider()
+        self.page_extractor = page_extractor or PageExtractor()
 
     def collect_sources(self, query: str, limit: int = 6) -> list[ResearchSource]:
         raw_sources = self.provider.search(query=query, limit=limit * 2)
@@ -25,7 +27,20 @@ class SourceCollector:
                 score=self._score(query=query, title=raw.get("title", ""), snippet=raw.get("snippet", ""), url=url),
             )
             deduped[url] = source
-        return sorted(deduped.values(), key=lambda item: item.score, reverse=True)[:limit]
+        ranked_sources = sorted(deduped.values(), key=lambda item: item.score, reverse=True)[:limit]
+        for source in ranked_sources:
+            extracted = self.page_extractor.extract(source.url, query)
+            if not extracted:
+                continue
+            source.excerpt = extracted.excerpt
+            source.publisher = extracted.publisher
+            source.retrieved_at = extracted.retrieved_at
+            if extracted.title and (not source.title or source.title == source.url):
+                source.title = extracted.title
+            if extracted.excerpt:
+                source.snippet = extracted.excerpt[:500]
+                source.score += 2
+        return sorted(ranked_sources, key=lambda item: item.score, reverse=True)
 
     def _score(self, query: str, title: str, snippet: str, url: str) -> float:
         query_terms = {term.lower() for term in query.split() if len(term) > 2}

@@ -12,6 +12,9 @@ class ResearchSource(BaseModel):
     url: str
     source: str
     snippet: str
+    excerpt: str | None = None
+    publisher: str | None = None
+    retrieved_at: str | None = None
     score: float = 0
 
 

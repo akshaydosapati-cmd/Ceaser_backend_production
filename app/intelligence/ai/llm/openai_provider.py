@@ -111,7 +111,16 @@ class OpenAIProvider(LLMProvider):
                     json=payload,
                 )
                 response.raise_for_status()
-                return response.json()
+                data = response.json()
+                usage = data.get("usage") or {}
+                logger.info(
+                    "llm_usage provider=openai model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                    model,
+                    usage.get("prompt_tokens"),
+                    usage.get("completion_tokens"),
+                    usage.get("total_tokens"),
+                )
+                return data
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
                 _quota_blocked_until = time.time() + 600

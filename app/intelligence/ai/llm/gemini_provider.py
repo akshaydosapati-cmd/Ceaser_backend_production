@@ -88,7 +88,16 @@ class GeminiFallbackProvider(LLMProvider):
                 response = await client.post(url, params={"key": settings.gemini_api_key}, json=payload)
                 response.raise_for_status()
                 logger.info("Gemini fallback generation succeeded.")
-                return response.json()
+                data = response.json()
+                usage = data.get("usageMetadata") or {}
+                logger.info(
+                    "llm_usage provider=gemini model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                    model,
+                    usage.get("promptTokenCount"),
+                    usage.get("candidatesTokenCount"),
+                    usage.get("totalTokenCount"),
+                )
+                return data
         except httpx.HTTPStatusError as exc:
             logger.error(
                 "Gemini fallback failed: status=%s body=%s",
