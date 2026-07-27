@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiFallbackProvider(LLMProvider):
+    default_model = settings.gemini_model
     async def generate(
         self,
         *,
@@ -65,6 +66,7 @@ class GeminiFallbackProvider(LLMProvider):
         instructions: str,
         input_text: str,
         model: str | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         yield await self.generate(instructions=instructions, input_text=input_text, model=model)
 

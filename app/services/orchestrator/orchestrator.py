@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import asyncio
+import threading
+from time import perf_counter
 from typing import Any
 from datetime import date, datetime, timedelta
 
@@ -176,6 +178,7 @@ class CeaserOrchestrator:
         return response_payload
 
     def prepare_stream_request(self, user_id: str, message: str, conversation_id: str | None = None, file_ids: list[str] | None = None) -> dict[str, Any]:
+        started = perf_counter()
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
         effective_message = message
         if attached_documents:
@@ -255,12 +258,14 @@ class CeaserOrchestrator:
         else:
             selected_agent_names = self._default_stream_agents(effective_message)
 
+        retrieval_started = perf_counter()
         memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         knowledge_context = self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
         )
+        retrieval_finished = perf_counter()
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         return {
             "mode": "generate",
@@ -277,6 +282,12 @@ class CeaserOrchestrator:
             "memories": memories,
             "knowledge_context": knowledge_context,
             "captured_memories": captured_memories,
+            "observability": {
+                "prepare_ms": round((perf_counter() - started) * 1000, 2),
+                "retrieval_time_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
+                "intent_ms": knowledge_context.get("_intent_ms"),
+                "context_tokens": knowledge_context.get("_context_tokens"),
+            },
             "context": {
                 "scope": {"name": "CEASER", "type": "personal_ai_os"},
                 "current_message": effective_message,
@@ -340,6 +351,19 @@ class CeaserOrchestrator:
                 "captured_memory_count": len(prepared["captured_memories"]) + len(captured_response_memories),
                 "attached_document_count": len(prepared["attached_documents"]),
                 "workflow_id": workflow.workflow_id if workflow else None,
+                "provider": prepared.get("stream_trace", {}).get("provider"),
+                "model": prepared.get("stream_trace", {}).get("model"),
+                "fallback_used": prepared.get("stream_trace", {}).get("fallback_used"),
+                "fallback_from": prepared.get("stream_trace", {}).get("fallback_from"),
+                "request_id": prepared.get("stream_trace", {}).get("request_id"),
+                "upstream_ttft_ms": prepared.get("stream_trace", {}).get("first_token_ms"),
+                "endpoint_ttft_ms": prepared.get("stream_trace", {}).get("endpoint_ttft_ms"),
+                "total_time_ms": prepared.get("stream_trace", {}).get("total_time_ms"),
+                "context_tokens": prepared.get("stream_trace", {}).get("context_tokens") or prepared.get("observability", {}).get("context_tokens"),
+                "output_tokens": prepared.get("stream_trace", {}).get("output_tokens"),
+                "retrieval_time_ms": prepared.get("stream_trace", {}).get("retrieval_time_ms") or prepared.get("observability", {}).get("retrieval_time_ms"),
+                "provider_connect_ms": prepared.get("stream_trace", {}).get("provider_connect_ms"),
+                "provider_generation_ms": prepared.get("stream_trace", {}).get("provider_generation_ms"),
             },
             "response": final_response,
         }
@@ -356,22 +380,53 @@ class CeaserOrchestrator:
 
     def _knowledge_context(self, *, user_id: str, message: str, conversation_id: str | None) -> dict:
         async def build() -> dict:
+            started = perf_counter()
             request = RequestContext(user_id=user_id, message=message, conversation_id=conversation_id, interaction_mode="chat")
+            intent_started = perf_counter()
             intent = await intent_engine.classify(request)
+            intent_finished = perf_counter()
             plan = await retrieval_planner.build(request=request, intent=intent)
+            retrieval_started = perf_counter()
             items = await KnowledgeEngine(self.db).retrieve(request=request, plan=plan)
+            retrieval_finished = perf_counter()
             package = intelligence_context_builder.build(request=request, items=items)
             return {
                 "intent": intent.value,
                 "output_format": plan.output_format,
                 "evidence": package.evidence_text,
                 "source_count": len(package.items),
+                "_intent_ms": round((intent_finished - intent_started) * 1000, 2),
+                "_retrieval_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
+                "_context_total_ms": round((perf_counter() - started) * 1000, 2),
+                "_context_tokens": max(1, round(len(package.evidence_text or "") / 4)),
             }
 
         try:
-            return asyncio.run(build())
+            return self._run_async_blocking(build())
         except Exception:
             return {"intent": "unavailable", "output_format": "chat", "evidence": "", "source_count": 0}
+
+    def _run_async_blocking(self, coro):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        result: dict[str, Any] = {}
+        error: list[Exception] = []
+
+        def runner() -> None:
+            try:
+                result["value"] = asyncio.run(coro)
+            except Exception as exc:  # noqa: BLE001
+                error.append(exc)
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join()
+        if error:
+            raise error[0]
+        return result.get("value")
 
     def _direct_response(
         self,

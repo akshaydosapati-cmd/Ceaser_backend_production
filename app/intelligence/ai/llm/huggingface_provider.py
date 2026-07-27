@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class HuggingFaceProvider(LLMProvider):
     base_url = "https://api-inference.huggingface.co/models"
+    default_model = settings.huggingface_model
 
     async def generate(
         self,
@@ -58,6 +59,7 @@ class HuggingFaceProvider(LLMProvider):
         instructions: str,
         input_text: str,
         model: str | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         yield await self.generate(instructions=instructions, input_text=input_text, model=model)
 

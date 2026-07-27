@@ -68,6 +68,7 @@ class OpenAIProvider(LLMProvider):
         instructions: str,
         input_text: str,
         model: str | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         if not settings.openai_api_key:
             logger.error("OpenAI stream blocked: OPENAI_API_KEY is not configured.")
@@ -93,6 +94,7 @@ class OpenAIProvider(LLMProvider):
         }
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
+                connect_started = time.perf_counter()
                 async with client.stream(
                     "POST",
                     self.endpoint,
@@ -100,6 +102,15 @@ class OpenAIProvider(LLMProvider):
                     json=payload,
                 ) as response:
                     response.raise_for_status()
+                    if trace is not None:
+                        trace["provider_connect_ms"] = round((time.perf_counter() - connect_started) * 1000, 2)
+                        if "request_id" in trace:
+                            logger.info(
+                                "ceaser_stream_stage request_id=%s stage=provider_connected provider=openai model=%s provider_connect_ms=%s",
+                                trace["request_id"],
+                                model or settings.openai_model,
+                                trace["provider_connect_ms"],
+                            )
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data: "):
                             continue

@@ -94,6 +94,9 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
     message = payload.message
     conversation_id = payload.conversation_id
     file_ids = list(payload.file_ids)
+    request_id = str(uuid.uuid4())
+    logger.info("ceaser_stream_stage request_id=%s stage=request_received conversation_id=%s", request_id, conversation_id)
+    logger.info("ceaser_stream_stage request_id=%s stage=authentication_complete user_id=%s", request_id, user_id)
 
     def event(event_type: str, data: dict | str) -> str:
         payload_text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=True)
@@ -102,11 +105,13 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
     async def stream() -> AsyncIterator[str]:
         started = perf_counter()
         stage_marks: dict[str, float] = {"start": started}
-        trace: dict[str, object] = {}
+        trace: dict[str, object] = {"request_id": request_id}
+        first_sse_token_logged = False
         try:
             yield event("status", {"state": "received"})
             yield event("status", {"state": "understanding_request"})
             orchestrator = CeaserOrchestrator(db)
+            logger.info("ceaser_stream_stage request_id=%s stage=retrieval_started", request_id)
             prepared = orchestrator.prepare_stream_request(
                 user_id=user_id,
                 message=message,
@@ -114,12 +119,40 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 file_ids=file_ids,
             )
             stage_marks["prepared"] = perf_counter()
+            trace["retrieval_time_ms"] = prepared.get("observability", {}).get("retrieval_time_ms")
+            logger.info(
+                "ceaser_stream_stage request_id=%s stage=intent_complete intent_ms=%s",
+                request_id,
+                prepared.get("observability", {}).get("intent_ms"),
+            )
+            logger.info(
+                "ceaser_stream_stage request_id=%s stage=retrieval_complete retrieval_time_ms=%s",
+                request_id,
+                prepared.get("observability", {}).get("retrieval_time_ms"),
+            )
+            logger.info(
+                "ceaser_stream_stage request_id=%s stage=context_complete context_tokens=%s prepare_ms=%s",
+                request_id,
+                prepared.get("observability", {}).get("context_tokens"),
+                prepared.get("observability", {}).get("prepare_ms"),
+            )
 
             if prepared["mode"] == "direct":
                 yield event("status", {"state": "generating"})
+                trace["endpoint_ttft_ms"] = round((perf_counter() - started) * 1000, 2)
+                trace["total_time_ms"] = trace["endpoint_ttft_ms"]
+                trace["output_tokens"] = max(1, round(len(prepared["response"]) / 4)) if prepared.get("response") else 0
                 yield event("token", prepared["response"])
+                first_sse_token_logged = True
+                logger.info(
+                    "ceaser_stream_stage request_id=%s stage=first_sse_token endpoint_ttft_ms=%s",
+                    request_id,
+                    trace["endpoint_ttft_ms"],
+                )
+                prepared["stream_trace"] = trace
                 response = orchestrator.finalize_stream_response(prepared, prepared["response"])
                 yield event("complete", response)
+                logger.info("ceaser_stream_stage request_id=%s stage=request_complete total_ms=%s", request_id, trace["total_time_ms"])
                 return
 
             yield event("status", {"state": "retrieving_context"})
@@ -132,8 +165,19 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 trace=trace,
             ):
                 chunks.append(chunk)
+                if not first_sse_token_logged:
+                    trace["endpoint_ttft_ms"] = round((perf_counter() - started) * 1000, 2)
+                    logger.info(
+                        "ceaser_stream_stage request_id=%s stage=first_sse_token endpoint_ttft_ms=%s",
+                        request_id,
+                        trace["endpoint_ttft_ms"],
+                    )
+                    first_sse_token_logged = True
                 yield event("token", chunk)
             response_text = "".join(chunks).strip()
+            trace["output_tokens"] = max(1, round(len(response_text) / 4)) if response_text else 0
+            trace["total_time_ms"] = round((perf_counter() - started) * 1000, 2)
+            prepared["stream_trace"] = trace
             response = orchestrator.finalize_stream_response(prepared, response_text)
             stage_marks["complete"] = perf_counter()
             logger.info(
@@ -148,6 +192,18 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 trace.get("first_token_ms"),
                 round((stage_marks["complete"] - started) * 1000, 2),
             )
+            logger.info(
+                "ceaser_stream_stage request_id=%s stage=generation_complete provider=%s model=%s fallback_used=%s fallback_from=%s upstream_ttft_ms=%s provider_connect_ms=%s provider_generation_ms=%s output_tokens=%s",
+                request_id,
+                trace.get("provider"),
+                trace.get("model"),
+                trace.get("fallback_used"),
+                trace.get("fallback_from"),
+                trace.get("first_token_ms"),
+                trace.get("provider_connect_ms"),
+                trace.get("provider_generation_ms"),
+                trace.get("output_tokens"),
+            )
             AuditService(db).record(
                 user_id=user_id,
                 action="message_created",
@@ -156,6 +212,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 metadata={"selected_agents": response.get("selected_agents", []), "memory_count": len(response.get("memories_used", []))},
             )
             yield event("complete", response)
+            logger.info("ceaser_stream_stage request_id=%s stage=request_complete total_ms=%s", request_id, trace.get("total_time_ms"))
         except ValueError as exc:
             yield event("error", {"message": str(exc)})
         except Exception:

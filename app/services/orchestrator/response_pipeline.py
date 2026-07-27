@@ -22,6 +22,8 @@ class ResponsePipeline:
 
     async def stream(self, message: str, context: dict, *, trace: dict[str, Any] | None = None) -> AsyncIterator[str]:
         instructions, context_text = self._build_prompt(message=message, context=context)
+        if trace is not None:
+            trace["context_tokens"] = self._estimate_tokens(f"{instructions}\n\n{context_text}")
         async for chunk in stream_text(instructions=instructions, input_text=context_text, trace=trace):
             yield chunk
 
@@ -60,3 +62,6 @@ class ResponsePipeline:
         if any(term in normalized for term in ["explain", "what is", "how does", "compare", "difference"]):
             return "Return a detailed but easy-to-understand explanation with headings, bullets, examples, and final summary."
         return "Use concise or standard detail based on the request."
+
+    def _estimate_tokens(self, text: str) -> int:
+        return max(1, round(len(text) / 4))

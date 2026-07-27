@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -65,6 +66,7 @@ class GroqProvider(LLMProvider):
         instructions: str,
         input_text: str,
         model: str | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         if not settings.groq_api_key:
             raise AIServiceUnavailableError("GROQ_API_KEY is not configured.", retryable=False, provider="groq", category="configuration")
@@ -86,6 +88,7 @@ class GroqProvider(LLMProvider):
                 pool=settings.llm_total_timeout_seconds,
             )
             async with httpx.AsyncClient(timeout=timeout) as client:
+                connect_started = perf_counter()
                 async with client.stream(
                     "POST",
                     self.endpoint,
@@ -93,6 +96,15 @@ class GroqProvider(LLMProvider):
                     json=payload,
                 ) as response:
                     response.raise_for_status()
+                    if trace is not None:
+                        trace["provider_connect_ms"] = round((perf_counter() - connect_started) * 1000, 2)
+                        if "request_id" in trace:
+                            logger.info(
+                                "ceaser_stream_stage request_id=%s stage=provider_connected provider=groq model=%s provider_connect_ms=%s",
+                                trace["request_id"],
+                                model or settings.groq_model,
+                                trace["provider_connect_ms"],
+                            )
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data: "):
                             continue
