@@ -198,14 +198,17 @@ class RazorpayBillingService:
             raise ValueError("Verify student status before selecting Student Pro.")
         provider_plan_id = self._provider_plan_id(plan.code, billing_interval)
         profile_name = getattr(getattr(user, "profile", None), "display_name", None)
-        customer = self.gateway.create_customer(
-            name=profile_name or user.email.split("@", 1)[0],
-            email=user.email,
-            notes={"user_id": user.id, "plan_code": plan.code},
-        )
+        customer_id = self._existing_provider_customer_id(user.id)
+        if not customer_id:
+            customer = self.gateway.create_customer(
+                name=profile_name or user.email.split("@", 1)[0],
+                email=user.email,
+                notes={"user_id": user.id, "plan_code": plan.code},
+            )
+            customer_id = str(customer.get("id"))
         remote_subscription = self.gateway.create_subscription(
             plan_id=provider_plan_id,
-            customer_id=str(customer.get("id")),
+            customer_id=customer_id,
             total_count=12 if billing_interval == "monthly" else 1,
             notes={"user_id": user.id, "plan_code": plan.code, "billing_interval": billing_interval},
         )
@@ -214,7 +217,7 @@ class RazorpayBillingService:
             plan_id=plan.id,
             provider="razorpay",
             provider_plan_id=provider_plan_id,
-            provider_customer_id=str(customer.get("id")),
+            provider_customer_id=customer_id,
             provider_subscription_id=str(remote_subscription.get("id")),
             status=str(remote_subscription.get("status") or "created"),
             billing_interval=billing_interval,
@@ -242,6 +245,21 @@ class RazorpayBillingService:
             "prefill_name": profile_name or user.email.split("@", 1)[0],
             "theme_color": settings.razorpay_checkout_theme_color,
         }
+
+    def _existing_provider_customer_id(self, user_id: str) -> str | None:
+        subscription = (
+            self.db.query(Subscription)
+            .filter(
+                Subscription.user_id == user_id,
+                Subscription.provider == "razorpay",
+                Subscription.provider_customer_id.isnot(None),
+            )
+            .order_by(Subscription.created_at.desc())
+            .first()
+        )
+        if not subscription or not subscription.provider_customer_id:
+            return None
+        return str(subscription.provider_customer_id)
 
     def create_order(self, user: User, *, amount: int, currency: str, receipt: str | None, plan_code: str | None, billing_interval: str) -> dict[str, Any]:
         plan = self.plan_service.get_by_code(plan_code) if plan_code else None
