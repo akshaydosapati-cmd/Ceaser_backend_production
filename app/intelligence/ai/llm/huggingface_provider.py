@@ -1,22 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from time import perf_counter
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from app.core.config.settings import settings
 from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.intelligence.ai.llm.base import LLMProvider
-from app.intelligence.ai.llm.http_errors import ai_error_from_http_error
+from app.intelligence.ai.llm.http_errors import ai_error_from_status
 
 logger = logging.getLogger(__name__)
 
 
 class HuggingFaceProvider(LLMProvider):
-    base_url = "https://api-inference.huggingface.co/models"
     default_model = settings.huggingface_model
 
     async def generate(
@@ -28,12 +30,13 @@ class HuggingFaceProvider(LLMProvider):
         temperature: float | None = None,
         max_output_tokens: int | None = None,
     ) -> str:
-        prompt = self._prompt(instructions=instructions, input_text=input_text)
         data = await self._post(
-            prompt=prompt,
             model=model or settings.huggingface_model,
+            instructions=instructions,
+            input_text=input_text,
             temperature=temperature if temperature is not None else 0.2,
-            max_new_tokens=max_output_tokens or settings.openai_max_tokens,
+            max_tokens=max_output_tokens or settings.openai_max_tokens,
+            stream=False,
         )
         return self._extract_text(data)
 
@@ -46,7 +49,7 @@ class HuggingFaceProvider(LLMProvider):
         model: str | None = None,
     ) -> dict[str, Any]:
         text = await self.generate(
-            instructions=f"{instructions}\nReturn valid JSON only for this schema: {json.dumps(schema)}",
+            instructions=f"{instructions}\nReturn valid JSON only for this schema: {json.dumps(schema, ensure_ascii=True)}",
             input_text=input_text,
             model=model,
             temperature=0.2,
@@ -61,9 +64,159 @@ class HuggingFaceProvider(LLMProvider):
         model: str | None = None,
         trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
-        yield await self.generate(instructions=instructions, input_text=input_text, model=model)
+        if trace is not None:
+            trace["stream_opened"] = False
+            trace["stream_completed"] = False
+            trace["stream_cancelled"] = False
+            trace["stream_error_type"] = None
 
-    async def _post(self, *, prompt: str, model: str, temperature: float, max_new_tokens: int) -> Any:
+        model_name = model or settings.huggingface_model
+        endpoint = self._endpoint_url()
+        hostname = urlparse(endpoint).hostname or "<invalid-host>"
+        payload = self._payload(
+            model=model_name,
+            instructions=instructions,
+            input_text=input_text,
+            temperature=0.2,
+            max_tokens=settings.openai_max_tokens,
+            stream=True,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout()) as client:
+                connect_started = perf_counter()
+                async with client.stream(
+                    "POST",
+                    endpoint,
+                    headers=self._headers(),
+                    json=payload,
+                ) as response:
+                    if response.status_code >= 400:
+                        error_body = (await response.aread()).decode("utf-8", errors="replace")
+                        raise self._status_error(
+                            status_code=response.status_code,
+                            body=error_body,
+                            model=model_name,
+                            endpoint=endpoint,
+                        )
+                    if trace is not None:
+                        trace["stream_opened"] = True
+                        trace["provider_connect_ms"] = round((perf_counter() - connect_started) * 1000, 2)
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            data = line[6:].strip()
+                        else:
+                            continue
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                        if isinstance(delta, str) and delta:
+                            yield delta
+                    if trace is not None:
+                        trace["stream_completed"] = True
+        except (asyncio.CancelledError, GeneratorExit):
+            if trace is not None:
+                trace["stream_cancelled"] = True
+                trace["stream_error_type"] = "cancelled"
+            logger.warning("Hugging Face stream cancelled.")
+            raise
+        except AIServiceUnavailableError as exc:
+            if trace is not None:
+                trace["stream_error_type"] = exc.category or exc.__class__.__name__
+            raise
+        except httpx.TimeoutException as exc:
+            if trace is not None:
+                trace["stream_error_type"] = "timeout"
+            logger.error("Hugging Face stream timeout: host=%s error=%s", hostname, repr(exc))
+            raise AIServiceUnavailableError(
+                f"huggingface timeout host={hostname}",
+                retryable=True,
+                provider="huggingface",
+                category="timeout",
+            ) from exc
+        except httpx.RequestError as exc:
+            if trace is not None:
+                trace["stream_error_type"] = exc.__class__.__name__
+            logger.error("Hugging Face stream network error: host=%s error=%s", hostname, repr(exc))
+            raise self._request_error(exc=exc, hostname=hostname) from exc
+
+    async def _post(
+        self,
+        *,
+        model: str,
+        instructions: str,
+        input_text: str,
+        temperature: float,
+        max_tokens: int,
+        stream: bool,
+    ) -> dict[str, Any]:
+        endpoint = self._endpoint_url()
+        hostname = urlparse(endpoint).hostname or "<invalid-host>"
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout()) as client:
+                response = await client.post(
+                    endpoint,
+                    headers=self._headers(),
+                    json=self._payload(
+                        model=model,
+                        instructions=instructions,
+                        input_text=input_text,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=stream,
+                    ),
+                )
+                if response.status_code >= 400:
+                    raise self._status_error(
+                        status_code=response.status_code,
+                        body=response.text,
+                        model=model,
+                        endpoint=endpoint,
+                    )
+                return response.json()
+        except AIServiceUnavailableError:
+            raise
+        except httpx.TimeoutException as exc:
+            logger.error("Hugging Face generation timeout: host=%s error=%s", hostname, repr(exc))
+            raise AIServiceUnavailableError(
+                f"huggingface timeout host={hostname}",
+                retryable=True,
+                provider="huggingface",
+                category="timeout",
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.error("Hugging Face generation network error: host=%s error=%s", hostname, repr(exc))
+            raise self._request_error(exc=exc, hostname=hostname) from exc
+
+    def _payload(
+        self,
+        *,
+        model: str,
+        instructions: str,
+        input_text: str,
+        temperature: float,
+        max_tokens: int,
+        stream: bool,
+    ) -> dict[str, Any]:
+        return {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": input_text},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+
+    def _headers(self) -> dict[str, str]:
         if not settings.huggingface_api_key:
             raise AIServiceUnavailableError(
                 "HUGGINGFACE_API_KEY is not configured.",
@@ -71,51 +224,89 @@ class HuggingFaceProvider(LLMProvider):
                 provider="huggingface",
                 category="configuration",
             )
-        url = f"{self.base_url}/{model}"
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "temperature": temperature,
-                "max_new_tokens": max_new_tokens,
-                "return_full_text": False,
-            },
+        return {
+            "Authorization": f"Bearer {settings.huggingface_api_key}",
+            "Content-Type": "application/json",
         }
-        try:
-            timeout = httpx.Timeout(
-                connect=settings.llm_connect_timeout_seconds,
-                read=settings.llm_total_timeout_seconds,
-                write=settings.llm_total_timeout_seconds,
-                pool=settings.llm_total_timeout_seconds,
+
+    def _endpoint_url(self) -> str:
+        return settings.huggingface_base_url.rstrip("/")
+
+    def _timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
+            connect=settings.llm_connect_timeout_seconds,
+            read=settings.llm_total_timeout_seconds,
+            write=settings.llm_total_timeout_seconds,
+            pool=settings.llm_total_timeout_seconds,
+        )
+
+    def _status_error(
+        self,
+        *,
+        status_code: int,
+        body: str,
+        model: str,
+        endpoint: str,
+    ) -> AIServiceUnavailableError:
+        sanitized_body = (body or "").strip()[:1200]
+        lowered = sanitized_body.lower()
+        parsed = urlparse(endpoint)
+        hostname = parsed.hostname or "<invalid-host>"
+        logger.error(
+            "Hugging Face request failed: status=%s host=%s model=%s body=%s",
+            status_code,
+            hostname,
+            model,
+            sanitized_body,
+        )
+        if status_code in {401, 403}:
+            return AIServiceUnavailableError(
+                f"huggingface authentication failed host={hostname}",
+                retryable=False,
+                provider="huggingface",
+                category="authentication",
             )
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, headers={"Authorization": f"Bearer {settings.huggingface_api_key}"}, json=payload)
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as exc:
-            logger.error("Hugging Face generation failed: status=%s body=%s", exc.response.status_code, exc.response.text[:1200])
-            raise ai_error_from_http_error(exc, provider="huggingface") from exc
-        except httpx.RequestError as exc:
-            logger.error("Hugging Face generation network error: %s", repr(exc))
-            raise ai_error_from_http_error(exc, provider="huggingface") from exc
+        if status_code == 404 or "model" in lowered and ("not found" in lowered or "does not exist" in lowered):
+            return AIServiceUnavailableError(
+                f"huggingface model unavailable model={model}",
+                retryable=False,
+                provider="huggingface",
+                category="model_unavailable",
+            )
+        if status_code == 429:
+            return AIServiceUnavailableError(
+                f"huggingface rate limited host={hostname}",
+                retryable=True,
+                provider="huggingface",
+                category="rate_limit",
+            )
+        return ai_error_from_status(
+            status_code=status_code,
+            body=f"huggingface provider error status={status_code} host={hostname}",
+            provider="huggingface",
+            category="provider_error",
+        )
+
+    def _request_error(self, *, exc: httpx.RequestError, hostname: str) -> AIServiceUnavailableError:
+        if isinstance(exc, httpx.ConnectError):
+            return AIServiceUnavailableError(
+                f"huggingface dns/connect failure host={hostname}",
+                retryable=True,
+                provider="huggingface",
+                category="dns",
+            )
+        return AIServiceUnavailableError(
+            f"huggingface network error: {exc.__class__.__name__} host={hostname}",
+            retryable=True,
+            provider="huggingface",
+            category="network",
+        )
 
     def _extract_text(self, data: Any) -> str:
-        if isinstance(data, list) and data:
-            first = data[0]
-            if isinstance(first, dict):
-                text = first.get("generated_text") or first.get("summary_text") or ""
-                return text.strip() if isinstance(text, str) else ""
         if isinstance(data, dict):
-            text = data.get("generated_text") or data.get("summary_text") or ""
-            if isinstance(text, str):
-                return text.strip()
+            choices = data.get("choices") or []
+            if choices:
+                content = choices[0].get("message", {}).get("content")
+                if isinstance(content, str):
+                    return content.strip()
         return ""
-
-    def _prompt(self, *, instructions: str, input_text: str) -> str:
-        return (
-            "You are CEASER, a serious personal AI operating system.\n"
-            "Answer in clear, modern, useful English.\n"
-            "Do not roleplay. Do not use Shakespearean, poetic, Latin, joke, or theatrical style unless the user asks for it.\n"
-            "Give a complete, direct answer that fits the user's request.\n\n"
-            f"Task instructions:\n{instructions}\n\n"
-            f"User request and context:\n{input_text}"
-        )

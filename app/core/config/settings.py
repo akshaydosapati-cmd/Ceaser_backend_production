@@ -28,9 +28,19 @@ class Settings(BaseSettings):
     llm_provider_order_raw: str = Field(default="groq,huggingface,gemini,openai", alias="LLM_PROVIDER_ORDER")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
-    huggingface_api_key: str | None = Field(default=None, alias="HUGGINGFACE_API_KEY")
+    huggingface_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("HUGGINGFACE_API_KEY", "HF_TOKEN"),
+    )
     groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
-    huggingface_model: str = Field(default="meta-llama/Llama-3.1-8B-Instruct", alias="HUGGINGFACE_MODEL")
+    huggingface_model: str = Field(
+        default="meta-llama/Llama-3.1-8B-Instruct",
+        validation_alias=AliasChoices("HUGGINGFACE_MODEL", "HF_MODEL"),
+    )
+    huggingface_base_url: str = Field(
+        default="https://router.huggingface.co/v1/chat/completions",
+        validation_alias=AliasChoices("HUGGINGFACE_BASE_URL", "HF_BASE_URL"),
+    )
     llm_connect_timeout_seconds: float = Field(default=10.0, alias="LLM_CONNECT_TIMEOUT_SECONDS")
     llm_first_token_timeout_seconds: float = Field(default=8.0, alias="LLM_FIRST_TOKEN_TIMEOUT_SECONDS")
     llm_total_timeout_seconds: float = Field(default=45.0, alias="LLM_TOTAL_TIMEOUT_SECONDS")

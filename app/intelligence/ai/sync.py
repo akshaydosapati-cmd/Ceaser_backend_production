@@ -78,6 +78,8 @@ async def stream_text(
                 trace["provider"] = provider_name
                 trace["model"] = getattr(provider, "default_model", None)
                 trace["fallback_used"] = index > 0
+                trace["fallback_started"] = index > 0
+                trace["fallback_provider"] = provider_name if index > 0 else None
                 trace["provider_attempt"] = index + 1
                 trace.setdefault("failed_attempts", [])
                 if index > 0 and "fallback_from" not in trace and trace["failed_attempts"]:
@@ -91,6 +93,14 @@ async def stream_text(
                         trace.get("model"),
                         trace.get("fallback_used"),
                     )
+                    if trace.get("fallback_started"):
+                        logger.info(
+                            "ceaser_stream_stage request_id=%s stage=fallback_started fallback_provider=%s fallback_from=%s fallback_reason=%s",
+                            trace["request_id"],
+                            trace.get("fallback_provider"),
+                            trace.get("fallback_from"),
+                            trace.get("fallback_reason"),
+                        )
             async for chunk in provider.stream(
                 instructions=instructions,
                 input_text=input_text,

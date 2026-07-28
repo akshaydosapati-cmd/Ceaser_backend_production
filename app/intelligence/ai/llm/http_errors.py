@@ -26,17 +26,35 @@ def ai_error_from_http_error(
         )
 
     status_code = exc.response.status_code
-    body = _truncate(exc.response.text)
+    body = _truncate(_safe_response_text(exc.response))
+    return ai_error_from_status(status_code=status_code, body=body, provider=provider, category=category)
+
+
+def ai_error_from_status(
+    *,
+    status_code: int,
+    body: str,
+    provider: str,
+    category: str = "generation",
+) -> AIServiceUnavailableError:
     retryable = status_code in RETRYABLE_STATUS_CODES
     if status_code in NON_RETRYABLE_STATUS_CODES:
         retryable = False
     if _looks_like_policy_or_prompt_error(body):
         retryable = False
-    return AIServiceUnavailableError(body, retryable=retryable, provider=provider, category=category)
+    detail = body or f"{provider} returned HTTP {status_code}"
+    return AIServiceUnavailableError(detail, retryable=retryable, provider=provider, category=category)
 
 
 def _truncate(value: str, max_length: int = 1200) -> str:
     return value[:max_length]
+
+
+def _safe_response_text(response: httpx.Response) -> str:
+    try:
+        return response.text
+    except httpx.ResponseNotRead:
+        return ""
 
 
 def _looks_like_policy_or_prompt_error(body: str) -> bool:

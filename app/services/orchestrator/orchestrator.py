@@ -270,13 +270,14 @@ class CeaserOrchestrator:
             selected_agent_names = self._default_stream_agents(effective_message)
 
         retrieval_started = perf_counter()
-        memories = [] if is_file_summary_request else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         knowledge_context = self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
             file_ids=file_ids or [],
         )
+        skip_memory_retrieval = is_file_summary_request or knowledge_context.get("retrieval_scope") in {"none", "conversation_only", "web", "integrations"}
+        memories = [] if skip_memory_retrieval else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         retrieval_finished = perf_counter()
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         observability = {
@@ -826,8 +827,8 @@ class CeaserOrchestrator:
         if not conversation:
             return {"messages": [], "previous_research": None, "inferred_topic": None}
 
-        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=100)
-        recent_messages = messages[-8:]
+        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=24)
+        recent_messages = messages[-6:]
         compact_messages = []
         previous_research = None
         for item in reversed(recent_messages):

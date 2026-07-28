@@ -35,9 +35,15 @@ class ResponsePipeline:
         detail_policy = self._detail_policy(message)
         knowledge_context = context.get("knowledge_context", {}) or {}
         intent = (knowledge_context.get("intent") or "").lower()
+        retrieval_scope = (knowledge_context.get("retrieval_scope") or "").lower()
         documents = self._document_context(intent=intent, documents=context.get("documents", []))
+        memories = context.get("memories", []) or []
+        conversation = context.get("conversation", []) or []
+        research = context.get("research_result")
+        merged_contributions = context.get("merged_contributions", {}) or {}
+        evidence = knowledge_context.get("evidence", "")
+
         if intent == "file_summary":
-            evidence = knowledge_context.get("evidence", "")
             context_text = "\n\n".join(
                 [
                     f"User request:\n{message}",
@@ -52,6 +58,23 @@ class ResponsePipeline:
                 "Write a direct summary with key ideas and a short takeaway."
             )
             return instructions, context_text
+
+        if retrieval_scope == "none" and not documents and not memories and not evidence and not research:
+            instructions = (
+                "You are CEASER, a personal AI operating system. Answer the user's request directly, clearly, and naturally. "
+                "Choose the response format that best matches the request. "
+                f"{detail_policy}"
+            )
+            return instructions, f"User request:\n{message}"
+
+        if retrieval_scope == "conversation_only" and conversation and not documents and not memories and not evidence:
+            instructions = (
+                "You are CEASER, a personal AI operating system. Continue the conversation naturally using only the recent chat context below. "
+                "Do not repeat yourself, and answer directly. "
+                f"{detail_policy}"
+            )
+            return instructions, "\n\n".join([f"User request:\n{message}", f"Recent conversation:\n{conversation}"])
+
         instructions = (
             "You are CEASER, a personal AI operating system. Answer the user's request directly. "
             "Use the provided CEASER context, memories, research, files, and project details when relevant. "
@@ -63,12 +86,12 @@ class ResponsePipeline:
         context_text = "\n\n".join(
                 [
                     f"User request:\n{message}",
-                    f"Memories:\n{context.get('memories', [])}",
-                    f"Conversation:\n{context.get('conversation', [])}",
+                    f"Memories:\n{memories}",
+                    f"Conversation:\n{conversation}",
                     f"Documents:\n{documents}",
-                    f"Knowledge evidence:\n{knowledge_context.get('evidence', '')}",
-                    f"Research:\n{context.get('research_result')}",
-                    f"Agent context:\n{context.get('merged_contributions', {})}",
+                    f"Knowledge evidence:\n{evidence}",
+                    f"Research:\n{research}",
+                    f"Agent context:\n{merged_contributions}",
                 ]
             )
         return instructions, context_text

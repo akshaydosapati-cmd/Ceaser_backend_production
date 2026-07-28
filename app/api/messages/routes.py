@@ -42,10 +42,15 @@ def create_message(payload: MessageCreate, user: Annotated[User, Depends(get_cur
 
 
 @chat_router.get("/conversations/{conversation_id}/messages", response_model=list[MessageRead])
-def chat_messages(conversation_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+def chat_messages(
+    conversation_id: str,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 60,
+    offset: int = 0,
+):
     require_conversation_access(db, user, conversation_id)
-    messages = ConversationService(db).list_messages(conversation_id=conversation_id)
-    AuditService(db).record(user_id=user.id, action="message_read", resource_type="conversation", resource_id=conversation_id, metadata={"count": len(messages)})
+    messages = ConversationService(db).list_messages(conversation_id=conversation_id, limit=limit, offset=offset)
     return messages
 
 
