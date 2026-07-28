@@ -351,7 +351,7 @@ class RazorpayBillingService:
         return subscription
 
     def overview(self, user_id: str) -> dict[str, Any]:
-        subscription = self.subscription_service.active_subscription(user_id)
+        subscription = self._overview_subscription(user_id)
         plan = self.db.query(Plan).filter(Plan.id == subscription.plan_id).first() or self.plan_service.get_by_code("FREE")
         payments = (
             self.db.query(BillingPayment)
@@ -376,6 +376,68 @@ class RazorpayBillingService:
             "invoices": invoices,
             "student_pricing_available": self.student_service.is_student_pricing_available(user_id),
         }
+
+    def _overview_subscription(self, user_id: str) -> Subscription:
+        now = utc_now()
+        active_rows = (
+            self.db.query(Subscription)
+            .filter(
+                Subscription.user_id == user_id,
+                Subscription.status.in_(["active", "grace_period", "authenticated"]),
+            )
+            .order_by(Subscription.created_at.desc())
+            .all()
+        )
+
+        for subscription in active_rows:
+            if not self._subscription_current_for_billing(subscription, now):
+                continue
+            if subscription.provider == "razorpay" and subscription.provider_subscription_id:
+                return subscription
+
+        for subscription in active_rows:
+            if not self._subscription_current_for_billing(subscription, now):
+                continue
+            if subscription.provider in {"system", "test"}:
+                return subscription
+
+        return self._free_subscription(user_id)
+
+    def _subscription_current_for_billing(self, subscription: Subscription, now: datetime) -> bool:
+        if subscription.current_period_end and subscription.current_period_end < now:
+            return False
+        return True
+
+    def _free_subscription(self, user_id: str) -> Subscription:
+        free = self.plan_service.get_by_code("FREE")
+        subscription = (
+            self.db.query(Subscription)
+            .filter(
+                Subscription.user_id == user_id,
+                Subscription.plan_id == free.id,
+                Subscription.provider == "system",
+                Subscription.status.in_(["active", "grace_period"]),
+            )
+            .order_by(Subscription.created_at.desc())
+            .first()
+        )
+        if subscription:
+            return subscription
+
+        now = utc_now()
+        subscription = Subscription(
+            user_id=user_id,
+            plan_id=free.id,
+            provider="system",
+            status="active",
+            billing_interval="monthly",
+            current_period_start=now,
+            current_period_end=now + timedelta(days=30),
+        )
+        self.db.add(subscription)
+        self.db.commit()
+        self.db.refresh(subscription)
+        return subscription
 
     def invoices(self, user_id: str) -> list[BillingInvoice]:
         return (

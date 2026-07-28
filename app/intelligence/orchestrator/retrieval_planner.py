@@ -11,6 +11,7 @@ class RetrievalPlanner:
         if intent == IntentType.GENERAL_QUESTION:
             scope = self._general_question_scope(request)
             providers: list[ProviderPlan] = []
+            providers.extend(self._integration_provider_plans(query))
             if scope == "conversation_only":
                 providers.append(ProviderPlan(provider="conversation", query=query, limit=4))
             return RetrievalPlan(
@@ -18,7 +19,7 @@ class RetrievalPlanner:
                 providers=providers,
                 needs_generation=True,
                 output_format="chat",
-                retrieval_scope=scope,
+                retrieval_scope="integrations" if providers and any(item.provider != "conversation" for item in providers) else scope,
             )
         if intent == IntentType.CALENDAR_LOOKUP:
             return RetrievalPlan(
@@ -117,6 +118,21 @@ class RetrievalPlanner:
             r"^(and|also|then|so)\b",
         )
         return "conversation_only" if any(re.search(pattern, text) for pattern in follow_up_patterns) else "none"
+
+    def _integration_provider_plans(self, query: str) -> list[ProviderPlan]:
+        text = query.lower()
+        providers: list[ProviderPlan] = []
+        if any(term in text for term in ["calendar", "schedule", "meeting", "event", "tomorrow", "today agenda"]):
+            providers.append(ProviderPlan(provider="calendar", query=query, required=False, limit=8))
+        if any(term in text for term in ["gmail", "email", "inbox", "mail", "unread", "label"]):
+            providers.append(ProviderPlan(provider="gmail", query=query, required=False, limit=8))
+        if any(term in text for term in ["drive", "google drive", "folder", "shared file", "shared files", "document in drive"]):
+            providers.append(ProviderPlan(provider="drive", query=query, required=False, limit=8))
+        if any(term in text for term in ["task", "tasks", "to-do", "todo", "deadline", "pending task"]):
+            providers.append(ProviderPlan(provider="tasks", query=query, required=False, limit=8))
+        if any(term in text for term in ["classroom", "assignment", "coursework", "course", "submission"]):
+            providers.append(ProviderPlan(provider="classroom", query=query, required=False, limit=8))
+        return providers
 
 
 retrieval_planner = RetrievalPlanner()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from app.models.integration import Integration
 from app.models.mixins import utc_now
 from app.services.integrations.provider_registry import ProviderRegistry
@@ -33,3 +35,12 @@ class IntegrationSyncService:
             }
         integration.last_sync_at = utc_now()
         return integration
+
+    def sync_if_stale(self, integration: Integration, *, max_age_seconds: int = 300) -> Integration:
+        if integration.status != "connected":
+            return integration
+        if integration.last_sync_at:
+            age = utc_now() - integration.last_sync_at
+            if age <= timedelta(seconds=max_age_seconds):
+                return integration
+        return self.sync(integration)

@@ -93,6 +93,10 @@ class IntegrationManager:
     def metadata(self, user_id: str, provider_id: str) -> dict:
         provider = self.registry.get(provider_id)
         integration = self.connections.get(user_id=user_id, provider=provider_id)
+        if integration and integration.status == "connected":
+            cached = (integration.metadata_json or {}).get("last_metadata")
+            if isinstance(cached, dict):
+                return cached
         return provider.get_metadata(integration)
 
     def sync(self, user_id: str, provider_id: str) -> Integration:
@@ -103,6 +107,16 @@ class IntegrationManager:
         except Exception as exc:
             integration.metadata_json = {**(integration.metadata_json or {}), "last_sync_error": str(exc)}
             AuditService(self.db).record(user_id=user_id, action="integration_sync_failed", resource_type="integration", resource_id=integration.id, metadata={"provider": provider_id, "error": str(exc)}, commit=False)
+        self.db.commit()
+        self.db.refresh(integration)
+        return integration
+
+    def sync_if_stale(self, user_id: str, provider_id: str, *, max_age_seconds: int = 300) -> Integration:
+        integration = self.connections.get_or_create(user_id=user_id, provider=provider_id)
+        try:
+            self.sync_service.sync_if_stale(integration, max_age_seconds=max_age_seconds)
+        except Exception as exc:
+            integration.metadata_json = {**(integration.metadata_json or {}), "last_sync_error": str(exc)}
         self.db.commit()
         self.db.refresh(integration)
         return integration

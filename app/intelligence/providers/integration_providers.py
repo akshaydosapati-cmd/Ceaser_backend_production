@@ -18,7 +18,7 @@ class IntegrationKnowledgeProvider(KnowledgeProvider):
     async def retrieve(self, *, request: RequestContext, plan: ProviderPlan) -> list[ContextItem]:
         manager = IntegrationManager(self.db)
         try:
-            manager.sync(user_id=request.user_id, provider_id=self.provider_id)
+            manager.sync_if_stale(user_id=request.user_id, provider_id=self.provider_id, max_age_seconds=300)
             metadata = manager.metadata(user_id=request.user_id, provider_id=self.provider_id)
         except Exception:
             return []
@@ -51,4 +51,3 @@ class IntegrationKnowledgeProvider(KnowledgeProvider):
             if value:
                 lines.append(f"{key}: {value}")
         return "\n".join(lines) or str(item)
-
