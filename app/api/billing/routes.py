@@ -39,11 +39,11 @@ def create_order(
             billing_interval=payload.billing_interval,
         )
     except BillingConfigurationError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except BillingProviderError as exc:
-        status_code = status.HTTP_401_UNAUTHORIZED if exc.category == "authentication" else status.HTTP_502_BAD_GATEWAY
+        status_code = status.HTTP_502_BAD_GATEWAY
         raise HTTPException(status_code=status_code, detail="Could not create the payment order.") from exc
 
 
