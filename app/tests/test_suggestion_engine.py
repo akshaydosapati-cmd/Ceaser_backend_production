@@ -40,3 +40,22 @@ def test_suggestion_engine_avoids_recent_duplicates_and_falls_back() -> None:
     texts = [item.text for item in suggestions]
     assert texts
     assert len(set(texts)) == len(texts)
+
+
+def test_suggestion_engine_handles_story_queries_without_study_prompts() -> None:
+    engine = SuggestionEngine()
+
+    suggestions = engine.generate(
+        user_query="Explain about Ravanasura",
+        response_text="Ravanasura is a major character in the Ramayana. His story shows power, pride, devotion, and downfall.",
+        intent="general_question",
+        retrieval_scope="none",
+        output_format="chat",
+        conversation_context={},
+        recent_suggestions=[],
+    )
+
+    texts = [item.text.lower() for item in suggestions]
+    assert texts
+    assert not any("timetable" in item or "flashcard" in item for item in texts)
+    assert any("traits" in item or "story" in item or "lessons" in item or "simply" in item for item in texts)
