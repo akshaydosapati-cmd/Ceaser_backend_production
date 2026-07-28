@@ -180,6 +180,8 @@ class CeaserOrchestrator:
                     intent=knowledge_context.get("intent"),
                     retrieval_scope=knowledge_context.get("retrieval_scope"),
                     output_format=knowledge_context.get("output_format"),
+                    intent_domain=knowledge_context.get("intent_domain"),
+                    intent_subdomain=knowledge_context.get("intent_subdomain"),
                 )
             ],
             "response": final_response,
@@ -430,6 +432,8 @@ class CeaserOrchestrator:
                     intent=prepared.get("knowledge_context", {}).get("intent"),
                     retrieval_scope=prepared.get("observability", {}).get("retrieval_scope"),
                     output_format=prepared.get("knowledge_context", {}).get("output_format"),
+                    intent_domain=prepared.get("knowledge_context", {}).get("intent_domain"),
+                    intent_subdomain=prepared.get("knowledge_context", {}).get("intent_subdomain"),
                 )
             ],
             "response": final_response,
@@ -478,6 +482,8 @@ class CeaserOrchestrator:
                 "source_count": len(package.items),
                 "retrieval_scope": plan.retrieval_scope,
                 "retrieval_sources": plan.retrieval_sources,
+                "intent_domain": request.metadata.get("intent_domain"),
+                "intent_subdomain": request.metadata.get("intent_subdomain"),
                 "_intent_ms": round((intent_finished - intent_started) * 1000, 2),
                 "_retrieval_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
                 "_context_total_ms": round((perf_counter() - started) * 1000, 2),
@@ -570,6 +576,8 @@ class CeaserOrchestrator:
                     intent=workflow_type,
                     retrieval_scope="direct",
                     output_format="chat",
+                    intent_domain=None,
+                    intent_subdomain=None,
                 )
             ],
             "response": response,
@@ -594,6 +602,8 @@ class CeaserOrchestrator:
         intent: str | None,
         retrieval_scope: str | None,
         output_format: str | None,
+        intent_domain: str | None = None,
+        intent_subdomain: str | None = None,
     ) -> list:
         return self.suggestion_engine.generate(
             user_query=user_query,
@@ -601,6 +611,8 @@ class CeaserOrchestrator:
             intent=intent,
             retrieval_scope=retrieval_scope,
             output_format=output_format,
+            intent_domain=intent_domain,
+            intent_subdomain=intent_subdomain,
             conversation_context=conversation_context,
             recent_suggestions=self._recent_suggestions(conversation),
         )
