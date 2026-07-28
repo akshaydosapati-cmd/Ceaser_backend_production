@@ -369,7 +369,11 @@ class StudentVerificationService:
         verification.institution_id = institution.id
         verification.verification_method = "nhce_document"
         verification.document_file_id = document_file_id
-        verification.status = "manual_review"
+        verification.status = "approved"
+        verification.verified_at = utc_now()
+        verification.reviewed_at = utc_now()
+        verification.expires_at = utc_now() + timedelta(days=365)
+        verification.rejection_reason = None
         self.db.commit()
         self.db.refresh(verification)
         return verification
