@@ -89,6 +89,8 @@ class SuggestionEngine:
             return "finance"
         if any(token in text for token in ["health", "fitness", "diet", "medical", "symptom", "wellness", "sleep"]):
             return "health"
+        if any(token in text for token in ["rama", "ravana", "ravanasura", "krishna", "gita", "ramayana", "mahabharata", "lanka", "kurukshetra"]):
+            return "education"
 
         if normalized_intent in {IntentType.FILE_SUMMARY.value, IntentType.FILE_LOOKUP.value}:
             return "research"
@@ -198,9 +200,10 @@ class SuggestionEngine:
             add("Generate interview questions", "generate_questions", 0.84)
         if any(token in text for token in ["document", "pdf", "report", "proposal"]):
             add("Export as PDF", "export_pdf", 0.77)
-        if any(token in text for token in ["rama", "krishna", "gita", "mahabharata", "ramayana"]):
+        if any(token in text for token in ["rama", "ravana", "ravanasura", "krishna", "gita", "mahabharata", "ramayana", "lanka"]):
             add("Explain the life lessons", "practical_lessons", 0.83)
             add("Compare key characters", "compare_topics", 0.8)
+            add("Explain Ravana's character", "character_analysis", 0.82)
 
         return suggestions
 
