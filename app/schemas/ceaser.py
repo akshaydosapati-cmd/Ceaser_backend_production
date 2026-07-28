@@ -7,6 +7,8 @@ class CeaserChatRequest(BaseModel):
     user_id: str | None = None
     message: str = Field(min_length=1)
     conversation_id: str | None = None
+    request_id: str | None = None
+    parent_message_id: str | None = None
     file_ids: list[str] = Field(default_factory=list)
 
 
@@ -66,6 +68,11 @@ class SuggestionResponse(BaseModel):
     action_type: str
     category: str
     confidence: float
+    label: str | None = None
+    prompt: str | None = None
+    conversation_id: str | None = None
+    parent_message_id: str | None = None
+    topic: str | None = None
 
 
 class CeaserChatResponse(BaseModel):

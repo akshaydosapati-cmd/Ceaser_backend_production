@@ -155,6 +155,11 @@ class SuggestionItem:
     action_type: str
     category: str
     confidence: float
+    label: str | None = None
+    prompt: str | None = None
+    conversation_id: str | None = None
+    parent_message_id: str | None = None
+    topic: str | None = None
 
 
 class SuggestionEngine:

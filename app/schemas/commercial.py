@@ -37,11 +37,52 @@ class SubscriptionRead(TimestampedModel):
     user_id: str
     plan_id: str
     provider: str
+    provider_plan_id: str | None = None
+    provider_customer_id: str | None = None
+    provider_subscription_id: str | None = None
+    provider_payment_id: str | None = None
+    provider_invoice_id: str | None = None
+    currency: str = "INR"
     status: str
     billing_interval: str
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
+    next_renewal_at: datetime | None = None
     cancel_at_period_end: bool
+    cancelled_at: datetime | None = None
+    paused_at: datetime | None = None
+
+
+class BillingPaymentRead(TimestampedModel):
+    user_id: str
+    subscription_id: str | None = None
+    plan_id: str | None = None
+    provider: str
+    provider_payment_id: str
+    provider_invoice_id: str | None = None
+    amount: int
+    currency: str
+    status: str
+    method: str | None = None
+    captured_at: datetime | None = None
+    extra_metadata: dict
+
+
+class BillingInvoiceRead(TimestampedModel):
+    user_id: str
+    subscription_id: str | None = None
+    plan_id: str | None = None
+    provider: str
+    provider_invoice_id: str
+    invoice_number: str | None = None
+    amount: int
+    currency: str
+    status: str
+    hosted_url: str | None = None
+    issued_at: datetime | None = None
+    due_at: datetime | None = None
+    paid_at: datetime | None = None
+    extra_metadata: dict
 
 
 class StudentVerificationRead(TimestampedModel):
@@ -64,6 +105,17 @@ class CommercialOverview(BaseModel):
     entitlements: list[EntitlementRead]
     usage: list[UsageSummaryItem]
     student_pricing_available: bool
+
+
+class BillingSubscriptionOverview(BaseModel):
+    plan: PlanRead
+    subscription: SubscriptionRead | None
+    entitlements: list[EntitlementRead]
+    usage: list[UsageSummaryItem]
+    payments: list[BillingPaymentRead]
+    invoices: list[BillingInvoiceRead]
+    student_pricing_available: bool
+    feature_access: dict | None = None
 
 
 class StudentEmailStartRequest(BaseModel):
@@ -96,6 +148,70 @@ class CheckoutResponse(BaseModel):
     checkout_id: str
     status: str
     message: str
+
+
+class BillingCreateSubscriptionRequest(BaseModel):
+    plan_code: str
+    billing_interval: str = Field(default="monthly", pattern="^(monthly|annual)$")
+
+
+class BillingCreateOrderRequest(BaseModel):
+    amount: int = Field(ge=100)
+    currency: str = Field(default="INR", min_length=3, max_length=10)
+    receipt: str | None = None
+    plan_code: str | None = None
+    billing_interval: str = Field(default="monthly", pattern="^(monthly|annual)$")
+
+
+class BillingCreateOrderResponse(BaseModel):
+    order_id: str
+    amount: int
+    currency: str
+    key_id: str
+    receipt: str
+    plan_code: str | None = None
+    billing_interval: str | None = None
+    name: str = "CEASER"
+    description: str | None = None
+    prefill_email: str | None = None
+    prefill_name: str | None = None
+    theme_color: str | None = None
+
+
+class BillingCreateSubscriptionResponse(BaseModel):
+    provider: str
+    key_id: str
+    checkout_mode: str = "subscription"
+    subscription_id: str
+    customer_id: str | None = None
+    plan_code: str
+    billing_interval: str
+    amount: int | None = None
+    currency: str = "INR"
+    name: str = "CEASER"
+    description: str
+    prefill_email: str | None = None
+    prefill_name: str | None = None
+    theme_color: str | None = None
+
+
+class BillingVerifyPaymentRequest(BaseModel):
+    razorpay_payment_id: str
+    razorpay_order_id: str | None = None
+    razorpay_subscription_id: str | None = None
+    razorpay_signature: str
+
+
+class BillingVerifyPaymentResponse(BaseModel):
+    status: str
+    message: str
+    subscription: SubscriptionRead | None = None
+
+
+class BillingManageResponse(BaseModel):
+    status: str
+    message: str
+    subscription: SubscriptionRead | None = None
 
 
 class EntitlementDecision(BaseModel):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import asyncio
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from time import perf_counter
 from typing import Any
 from datetime import date, datetime, timedelta
@@ -48,7 +48,16 @@ class CeaserOrchestrator:
         self.response_pipeline = ResponsePipeline()
         self.suggestion_engine = SuggestionEngine()
 
-    def handle_message(self, user_id: str, message: str, conversation_id: str | None = None, file_ids: list[str] | None = None) -> dict:
+    def handle_message(
+        self,
+        user_id: str,
+        message: str,
+        conversation_id: str | None = None,
+        file_ids: list[str] | None = None,
+        *,
+        request_id: str | None = None,
+        parent_message_id: str | None = None,
+    ) -> dict:
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
         effective_message = message
         if attached_documents:
@@ -57,13 +66,26 @@ class CeaserOrchestrator:
 
         conversation = self._get_conversation(conversation_id)
         conversation_context = self._conversation_context(conversation)
-        effective_message = self._contextualize_follow_up(effective_message, conversation_context)
+        follow_up_trace = self._follow_up_trace(
+            message=message,
+            conversation_context=conversation_context,
+            parent_message_id=parent_message_id,
+        )
+        effective_message = self._contextualize_follow_up(effective_message, follow_up_trace)
         if conversation:
             self.conversations.create_message(
                 conversation_id=conversation.id,
                 role="user",
                 content=message,
-                metadata={"attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents]},
+                metadata={
+                    "request_id": request_id,
+                    "parent_message_id": parent_message_id,
+                    "attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents],
+                    "follow_up_detected": follow_up_trace["follow_up_detected"],
+                    "active_topic": follow_up_trace["active_topic"],
+                    "resolved_entities": follow_up_trace["resolved_entities"],
+                    "context_source": follow_up_trace["context_source"],
+                },
                 ingest_knowledge=False,
             )
             if conversation.title == "New Chat":
@@ -76,10 +98,13 @@ class CeaserOrchestrator:
                 conversation=conversation,
                 conversation_id=conversation_id,
                 conversation_context=conversation_context,
+                follow_up_trace=follow_up_trace,
                 response=calendar_response,
                 selected_agents=["Alex"],
                 workflow_type="calendar_lookup",
                 summary="Calendar lookup completed.",
+                request_id=request_id,
+                parent_message_id=parent_message_id,
             )
 
         integration_response = self._maybe_integration_response(user_id=user_id, message=effective_message)
@@ -89,10 +114,13 @@ class CeaserOrchestrator:
                 conversation=conversation,
                 conversation_id=conversation_id,
                 conversation_context=conversation_context,
+                follow_up_trace=follow_up_trace,
                 response=integration_response,
                 selected_agents=["Alex"],
                 workflow_type="integration_lookup",
                 summary="Integration lookup completed.",
+                request_id=request_id,
+                parent_message_id=parent_message_id,
             )
 
         identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message)
@@ -102,10 +130,13 @@ class CeaserOrchestrator:
                 conversation=conversation,
                 conversation_id=conversation_id,
                 conversation_context=conversation_context,
+                follow_up_trace=follow_up_trace,
                 response=identity_memory_response,
                 selected_agents=["Alex"],
                 workflow_type="memory_identity",
                 summary="Identity memory updated.",
+                request_id=request_id,
+                parent_message_id=parent_message_id,
             )
 
         workflow = self.workflow_orchestrator.run(user_id=user_id, message=effective_message, conversation_id=conversation_id, file_ids=file_ids or [])
@@ -126,10 +157,12 @@ class CeaserOrchestrator:
                 "current_message": effective_message,
                 "memories": memories,
                 "conversation": conversation_context["messages"],
+                "conversation_summary": conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
                 "documents": attached_documents,
                 "knowledge_context": knowledge_context,
+                "follow_up_trace": follow_up_trace,
                 "merged_contributions": {
                     "selected_agents": selected_agent_names,
                     "contributions": workflow.contributions,
@@ -143,6 +176,20 @@ class CeaserOrchestrator:
             user_id=user_id,
             user_message=message,
             assistant_response=final_response,
+        )
+        suggestions = self._generate_suggestions(
+            user_query=message,
+            response_text=final_response,
+            conversation=conversation,
+            conversation_context=conversation_context,
+            intent=knowledge_context.get("intent"),
+            retrieval_scope=knowledge_context.get("retrieval_scope"),
+            output_format=knowledge_context.get("output_format"),
+            intent_domain=knowledge_context.get("intent_domain"),
+            intent_subdomain=knowledge_context.get("intent_subdomain"),
+            request_id=request_id,
+            parent_message_id=parent_message_id,
+            active_topic=follow_up_trace.get("active_topic"),
         )
         response_payload = {
             "scope": "personal_ai_os",
@@ -169,34 +216,52 @@ class CeaserOrchestrator:
                 "captured_memory_count": len(captured_memories) + len(captured_response_memories),
                 "attached_document_count": len(attached_documents),
                 "workflow_id": workflow.workflow_id,
+                "request_id": request_id,
+                "parent_message_id": parent_message_id,
+                "history_message_count": conversation_context.get("history_message_count", 0),
+                "history_token_count": conversation_context.get("history_token_count", 0),
+                "follow_up_detected": follow_up_trace.get("follow_up_detected", False),
+                "active_topic": follow_up_trace.get("active_topic"),
+                "resolved_entities": follow_up_trace.get("resolved_entities", []),
+                "context_source": follow_up_trace.get("context_source", []),
             },
-            "suggestions": [
-                asdict(item)
-                for item in self._generate_suggestions(
-                    user_query=message,
-                    response_text=final_response,
-                    conversation=conversation,
-                    conversation_context=conversation_context,
-                    intent=knowledge_context.get("intent"),
-                    retrieval_scope=knowledge_context.get("retrieval_scope"),
-                    output_format=knowledge_context.get("output_format"),
-                    intent_domain=knowledge_context.get("intent_domain"),
-                    intent_subdomain=knowledge_context.get("intent_subdomain"),
-                )
-            ],
+            "suggestions": [asdict(item) for item in suggestions],
             "response": final_response,
         }
         if conversation:
-            self.conversations.create_message(
+            assistant_message = self.conversations.create_message(
                 conversation_id=conversation.id,
                 role="assistant",
                 content=final_response,
                 metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
                 ingest_knowledge=False,
             )
+            bound = self._bind_suggestions(
+                suggestions=suggestions,
+                conversation_id=conversation.id,
+                parent_message_id=assistant_message.id,
+                active_topic=follow_up_trace.get("active_topic"),
+            )
+            response_payload["suggestions"] = [asdict(item) for item in bound]
+            assistant_message.extra_metadata = {
+                **(assistant_message.extra_metadata or {}),
+                **{key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
+            }
+            self.db.add(assistant_message)
+            self.db.commit()
+            self.db.refresh(assistant_message)
         return response_payload
 
-    def prepare_stream_request(self, user_id: str, message: str, conversation_id: str | None = None, file_ids: list[str] | None = None) -> dict[str, Any]:
+    def prepare_stream_request(
+        self,
+        user_id: str,
+        message: str,
+        conversation_id: str | None = None,
+        file_ids: list[str] | None = None,
+        *,
+        request_id: str | None = None,
+        parent_message_id: str | None = None,
+    ) -> dict[str, Any]:
         started = perf_counter()
         request_trace: dict[str, Any] = {}
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [], trace=request_trace)
@@ -215,14 +280,27 @@ class CeaserOrchestrator:
 
         conversation = self._get_conversation(conversation_id)
         conversation_context = self._conversation_context(conversation)
-        effective_message = self._contextualize_follow_up(effective_message, conversation_context)
+        follow_up_trace = self._follow_up_trace(
+            message=message,
+            conversation_context=conversation_context,
+            parent_message_id=parent_message_id,
+        )
+        effective_message = self._contextualize_follow_up(effective_message, follow_up_trace)
 
         if conversation:
             self.conversations.create_message(
                 conversation_id=conversation.id,
                 role="user",
                 content=message,
-                metadata={"attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents]},
+                metadata={
+                    "request_id": request_id,
+                    "parent_message_id": parent_message_id,
+                    "attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents],
+                    "follow_up_detected": follow_up_trace["follow_up_detected"],
+                    "active_topic": follow_up_trace["active_topic"],
+                    "resolved_entities": follow_up_trace["resolved_entities"],
+                    "context_source": follow_up_trace["context_source"],
+                },
                 ingest_knowledge=False,
             )
             if conversation.title == "New Chat":
@@ -236,10 +314,13 @@ class CeaserOrchestrator:
                 "conversation": conversation,
                 "conversation_id": conversation.id if conversation else conversation_id,
                 "conversation_context": conversation_context,
+                "follow_up_trace": follow_up_trace,
                 "response": calendar_response,
                 "selected_agents": ["Alex"],
                 "workflow_type": "calendar_lookup",
                 "summary": "Calendar lookup completed.",
+                "request_id": request_id,
+                "parent_message_id": parent_message_id,
             }
 
         integration_response = self._maybe_integration_response(user_id=user_id, message=effective_message)
@@ -250,10 +331,13 @@ class CeaserOrchestrator:
                 "conversation": conversation,
                 "conversation_id": conversation.id if conversation else conversation_id,
                 "conversation_context": conversation_context,
+                "follow_up_trace": follow_up_trace,
                 "response": integration_response,
                 "selected_agents": ["Alex"],
                 "workflow_type": "integration_lookup",
                 "summary": "Integration lookup completed.",
+                "request_id": request_id,
+                "parent_message_id": parent_message_id,
             }
 
         identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message)
@@ -264,10 +348,13 @@ class CeaserOrchestrator:
                 "conversation": conversation,
                 "conversation_id": conversation.id if conversation else conversation_id,
                 "conversation_context": conversation_context,
+                "follow_up_trace": follow_up_trace,
                 "response": identity_memory_response,
                 "selected_agents": ["Alex"],
                 "workflow_type": "memory_identity",
                 "summary": "Identity memory updated.",
+                "request_id": request_id,
+                "parent_message_id": parent_message_id,
             }
 
         selected_agent_names: list[str] = []
@@ -332,15 +419,20 @@ class CeaserOrchestrator:
             "knowledge_context": knowledge_context,
             "captured_memories": captured_memories,
             "observability": observability,
+            "request_id": request_id,
+            "parent_message_id": parent_message_id,
+            "follow_up_trace": follow_up_trace,
             "context": {
                 "scope": {"name": "CEASER", "type": "personal_ai_os"},
                 "current_message": effective_message,
                 "memories": memories,
                 "conversation": conversation_context["messages"],
+                "conversation_summary": conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
                 "documents": attached_documents,
                 "knowledge_context": knowledge_context,
+                "follow_up_trace": follow_up_trace,
                 "merged_contributions": {
                     "selected_agents": selected_agent_names,
                     "contributions": workflow.contributions if workflow else [],
@@ -358,17 +450,35 @@ class CeaserOrchestrator:
                 conversation=prepared["conversation"],
                 conversation_id=prepared["conversation_id"],
                 conversation_context=prepared["conversation_context"],
+                follow_up_trace=prepared.get("follow_up_trace") or {},
                 response=prepared["response"],
                 selected_agents=prepared["selected_agents"],
                 workflow_type=prepared["workflow_type"],
                 summary=prepared["summary"],
+                request_id=prepared.get("request_id"),
+                parent_message_id=prepared.get("parent_message_id"),
             )
 
         workflow = prepared.get("workflow")
+        follow_up_trace = prepared.get("follow_up_trace") or {}
         captured_response_memories = self.memory_capture.capture_interaction(
             user_id=prepared["user_id"],
             user_message=prepared["message"],
             assistant_response=final_response,
+        )
+        suggestions = self._generate_suggestions(
+            user_query=prepared["message"],
+            response_text=final_response,
+            conversation=prepared.get("conversation"),
+            conversation_context=prepared.get("conversation_context"),
+            intent=prepared.get("knowledge_context", {}).get("intent"),
+            retrieval_scope=prepared.get("observability", {}).get("retrieval_scope"),
+            output_format=prepared.get("knowledge_context", {}).get("output_format"),
+            intent_domain=prepared.get("knowledge_context", {}).get("intent_domain"),
+            intent_subdomain=prepared.get("knowledge_context", {}).get("intent_subdomain"),
+            request_id=prepared.get("request_id"),
+            parent_message_id=prepared.get("parent_message_id"),
+            active_topic=follow_up_trace.get("active_topic"),
         )
         response_payload = {
             "scope": "personal_ai_os",
@@ -399,7 +509,8 @@ class CeaserOrchestrator:
                 "model": prepared.get("stream_trace", {}).get("model"),
                 "fallback_used": prepared.get("stream_trace", {}).get("fallback_used"),
                 "fallback_from": prepared.get("stream_trace", {}).get("fallback_from"),
-                "request_id": prepared.get("stream_trace", {}).get("request_id"),
+                "request_id": prepared.get("request_id") or prepared.get("stream_trace", {}).get("request_id"),
+                "parent_message_id": prepared.get("parent_message_id"),
                 "upstream_ttft_ms": prepared.get("stream_trace", {}).get("first_token_ms"),
                 "endpoint_ttft_ms": prepared.get("stream_trace", {}).get("endpoint_ttft_ms"),
                 "total_time_ms": prepared.get("stream_trace", {}).get("total_time_ms"),
@@ -421,32 +532,39 @@ class CeaserOrchestrator:
                 "prompt_tokens": prepared.get("stream_trace", {}).get("prompt_tokens") or prepared.get("observability", {}).get("prompt_tokens"),
                 "selected_chunks": prepared.get("observability", {}).get("selected_chunks"),
                 "cache_hit": prepared.get("observability", {}).get("cache_hit"),
+                "history_message_count": prepared.get("conversation_context", {}).get("history_message_count", 0),
+                "history_token_count": prepared.get("conversation_context", {}).get("history_token_count", 0),
+                "follow_up_detected": follow_up_trace.get("follow_up_detected", False),
+                "active_topic": follow_up_trace.get("active_topic"),
+                "resolved_entities": follow_up_trace.get("resolved_entities", []),
+                "context_source": follow_up_trace.get("context_source", []),
             },
-            "suggestions": [
-                asdict(item)
-                for item in self._generate_suggestions(
-                    user_query=prepared["message"],
-                    response_text=final_response,
-                    conversation=prepared.get("conversation"),
-                    conversation_context=prepared.get("conversation_context"),
-                    intent=prepared.get("knowledge_context", {}).get("intent"),
-                    retrieval_scope=prepared.get("observability", {}).get("retrieval_scope"),
-                    output_format=prepared.get("knowledge_context", {}).get("output_format"),
-                    intent_domain=prepared.get("knowledge_context", {}).get("intent_domain"),
-                    intent_subdomain=prepared.get("knowledge_context", {}).get("intent_subdomain"),
-                )
-            ],
+            "suggestions": [asdict(item) for item in suggestions],
             "response": final_response,
         }
         conversation = prepared.get("conversation")
         if conversation:
-            self.conversations.create_message(
+            assistant_message = self.conversations.create_message(
                 conversation_id=conversation.id,
                 role="assistant",
                 content=final_response,
                 metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
                 ingest_knowledge=False,
             )
+            bound = self._bind_suggestions(
+                suggestions=suggestions,
+                conversation_id=conversation.id,
+                parent_message_id=assistant_message.id,
+                active_topic=follow_up_trace.get("active_topic"),
+            )
+            response_payload["suggestions"] = [asdict(item) for item in bound]
+            assistant_message.extra_metadata = {
+                **(assistant_message.extra_metadata or {}),
+                **{key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
+            }
+            self.db.add(assistant_message)
+            self.db.commit()
+            self.db.refresh(assistant_message)
         return response_payload
 
     def _knowledge_context(self, *, user_id: str, message: str, conversation_id: str | None, file_ids: list[str] | None = None) -> dict:
@@ -540,11 +658,28 @@ class CeaserOrchestrator:
         conversation: Conversation | None,
         conversation_id: str | None,
         conversation_context: dict,
+        follow_up_trace: dict,
         response: str,
         selected_agents: list[str],
         workflow_type: str,
         summary: str,
+        request_id: str | None = None,
+        parent_message_id: str | None = None,
     ) -> dict:
+        suggestions = self._generate_suggestions(
+            user_query=conversation_context.get("messages", [{}])[-1].get("content", "") if conversation_context.get("messages") else response,
+            response_text=response,
+            conversation=conversation,
+            conversation_context=conversation_context,
+            intent=workflow_type,
+            retrieval_scope="direct",
+            output_format="chat",
+            intent_domain=None,
+            intent_subdomain=None,
+            request_id=request_id,
+            parent_message_id=parent_message_id,
+            active_topic=follow_up_trace.get("active_topic"),
+        )
         response_payload = {
             "scope": "personal_ai_os",
             "conversation_id": conversation.id if conversation else conversation_id,
@@ -565,31 +700,40 @@ class CeaserOrchestrator:
                 "attached_document_count": 0,
                 "workflow_id": None,
                 "direct_response_type": workflow_type,
+                "request_id": request_id,
+                "parent_message_id": parent_message_id,
+                "history_message_count": conversation_context.get("history_message_count", 0),
+                "history_token_count": conversation_context.get("history_token_count", 0),
+                "follow_up_detected": follow_up_trace.get("follow_up_detected", False),
+                "active_topic": follow_up_trace.get("active_topic"),
+                "resolved_entities": follow_up_trace.get("resolved_entities", []),
+                "context_source": follow_up_trace.get("context_source", []),
             },
-            "suggestions": [
-                asdict(item)
-                for item in self._generate_suggestions(
-                    user_query=conversation_context.get("messages", [{}])[-1].get("content", "") if conversation_context.get("messages") else response,
-                    response_text=response,
-                    conversation=conversation,
-                    conversation_context=conversation_context,
-                    intent=workflow_type,
-                    retrieval_scope="direct",
-                    output_format="chat",
-                    intent_domain=None,
-                    intent_subdomain=None,
-                )
-            ],
+            "suggestions": [asdict(item) for item in suggestions],
             "response": response,
         }
         if conversation:
-            self.conversations.create_message(
+            assistant_message = self.conversations.create_message(
                 conversation_id=conversation.id,
                 role="assistant",
                 content=response,
                 metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
                 ingest_knowledge=False,
             )
+            bound = self._bind_suggestions(
+                suggestions=suggestions,
+                conversation_id=conversation.id,
+                parent_message_id=assistant_message.id,
+                active_topic=follow_up_trace.get("active_topic"),
+            )
+            response_payload["suggestions"] = [asdict(item) for item in bound]
+            assistant_message.extra_metadata = {
+                **(assistant_message.extra_metadata or {}),
+                **{key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
+            }
+            self.db.add(assistant_message)
+            self.db.commit()
+            self.db.refresh(assistant_message)
         return response_payload
 
     def _generate_suggestions(
@@ -604,8 +748,11 @@ class CeaserOrchestrator:
         output_format: str | None,
         intent_domain: str | None = None,
         intent_subdomain: str | None = None,
+        request_id: str | None = None,
+        parent_message_id: str | None = None,
+        active_topic: str | None = None,
     ) -> list:
-        return self.suggestion_engine.generate(
+        generated = self.suggestion_engine.generate(
             user_query=user_query,
             response_text=response_text,
             intent=intent,
@@ -616,6 +763,37 @@ class CeaserOrchestrator:
             conversation_context=conversation_context,
             recent_suggestions=self._recent_suggestions(conversation),
         )
+        return self._bind_suggestions(
+            suggestions=generated,
+            conversation_id=conversation.id if conversation else None,
+            parent_message_id=parent_message_id,
+            active_topic=active_topic,
+        )
+
+    def _bind_suggestions(
+        self,
+        *,
+        suggestions: list,
+        conversation_id: str | None,
+        parent_message_id: str | None,
+        active_topic: str | None,
+    ) -> list:
+        bound: list = []
+        for item in suggestions:
+            prompt = item.prompt or item.text
+            if active_topic and item.action_type == "follow_up" and active_topic.lower() not in prompt.lower():
+                prompt = f"{item.text} about {active_topic}"
+            bound.append(
+                replace(
+                    item,
+                    label=item.label or item.text,
+                    prompt=prompt,
+                    conversation_id=conversation_id,
+                    parent_message_id=parent_message_id,
+                    topic=active_topic,
+                )
+            )
+        return bound
 
     def _recent_suggestions(self, conversation: Conversation | None) -> list[str]:
         if not conversation:
@@ -914,12 +1092,26 @@ class CeaserOrchestrator:
 
     def _conversation_context(self, conversation: Conversation | None) -> dict:
         if not conversation:
-            return {"messages": [], "previous_research": None, "inferred_topic": None}
+            return {
+                "messages": [],
+                "previous_research": None,
+                "inferred_topic": None,
+                "summary": None,
+                "history_message_count": 0,
+                "history_token_count": 0,
+                "latest_user_message": None,
+                "latest_assistant_message": None,
+                "message_ids": [],
+                "named_entities": [],
+            }
 
-        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=24)
-        recent_messages = messages[-6:]
+        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=40)
+        recent_messages = messages[-12:]
+        older_messages = messages[:-12]
         compact_messages = []
         previous_research = None
+        latest_user_message = None
+        latest_assistant_message = None
         for item in reversed(recent_messages):
             metadata = item.extra_metadata
             research = metadata.get("research") if isinstance(metadata, dict) else None
@@ -939,14 +1131,31 @@ class CeaserOrchestrator:
         for item in recent_messages:
             metadata = item.extra_metadata
             research = metadata.get("research") if isinstance(metadata, dict) else None
+            if item.role == "assistant" and latest_assistant_message is None:
+                latest_assistant_message = {"id": item.id, "content": item.content[:2200]}
+            if item.role == "user" and latest_user_message is None:
+                latest_user_message = {"id": item.id, "content": item.content[:1200]}
             compact_messages.append(
                 {
+                    "id": item.id,
                     "role": item.role,
                     "content": item.content[:1600],
                     "research_query": research.get("query") if research else None,
                 }
             )
-        return {"messages": compact_messages, "previous_research": previous_research, "inferred_topic": self._infer_topic(compact_messages)}
+        named_entities = self._extract_entities(compact_messages)
+        return {
+            "messages": compact_messages,
+            "previous_research": previous_research,
+            "inferred_topic": self._infer_topic(compact_messages),
+            "summary": self._summarize_messages(older_messages),
+            "history_message_count": len(recent_messages),
+            "history_token_count": max(1, round(sum(len(item.get("content", "")) for item in compact_messages) / 4)),
+            "latest_user_message": latest_user_message,
+            "latest_assistant_message": latest_assistant_message,
+            "message_ids": [item.id for item in recent_messages],
+            "named_entities": named_entities,
+        }
 
     def _maybe_research(self, query: str, selected_agent_names: list[str]):
         if "Nova" not in selected_agent_names:
@@ -1065,18 +1274,102 @@ class CeaserOrchestrator:
             return f"{prefix}{previous_query}".strip()
         return f"{prefix}startups from {previous_query}".strip()
 
-    def _contextualize_follow_up(self, message: str, conversation_context: dict) -> str:
-        if not self._is_follow_up_research_request(message):
+    def _contextualize_follow_up(self, message: str, follow_up_trace: dict) -> str:
+        if not follow_up_trace.get("follow_up_detected"):
             return message
-        previous_research = conversation_context.get("previous_research") or {}
-        topic = (previous_research.get("query") or conversation_context.get("inferred_topic") or "").strip()
+        topic = (follow_up_trace.get("active_topic") or "").strip()
         if not topic:
             return message
-        return (
-            f"{message}\n\n"
-            f"Important conversation context: this is a follow-up to the previous topic '{topic}'. "
-            f"Answer within that topic. If the user asks for top startups, provide startup/company names, not startup categories."
+        previous_user = (follow_up_trace.get("previous_user_message") or "").strip()
+        previous_assistant = (follow_up_trace.get("previous_assistant_excerpt") or "").strip()
+        summary = (follow_up_trace.get("conversation_summary") or "").strip()
+        entities = ", ".join(follow_up_trace.get("resolved_entities") or [])
+        return "\n\n".join(
+            [
+                "System instruction: Continue the active conversation naturally. Resolve vague references such as this, it, them, him, her, the previous answer, explain briefly, continue, and give examples from the conversation history. Do not describe CEASER unless explicitly asked.",
+                f"Active topic: {topic}",
+                f"Resolved entities: {entities or topic}",
+                f"Previous user message: {previous_user or 'None'}",
+                f"Previous assistant answer: {previous_assistant or 'None'}",
+                f"Older conversation summary: {summary or 'None'}",
+                f"Current user message: {message}",
+            ]
         )
+
+    def _follow_up_trace(self, *, message: str, conversation_context: dict, parent_message_id: str | None) -> dict:
+        normalized = message.lower().strip()
+        previous_research = conversation_context.get("previous_research") or {}
+        active_topic = (
+            previous_research.get("query")
+            or conversation_context.get("inferred_topic")
+            or self._topic_from_previous_assistant(conversation_context.get("latest_assistant_message", {}).get("content", ""))
+            or self._topic_from_previous_user(conversation_context.get("latest_user_message", {}).get("content", ""))
+        )
+        follow_up_detected = self._is_conversation_follow_up(normalized)
+        resolved_entities = list(conversation_context.get("named_entities") or [])
+        if active_topic and active_topic not in resolved_entities:
+            resolved_entities.insert(0, active_topic)
+        context_source = []
+        if conversation_context.get("latest_user_message"):
+            context_source.append("previous_user_message")
+        if conversation_context.get("latest_assistant_message"):
+            context_source.append("previous_assistant_answer")
+        if conversation_context.get("summary"):
+            context_source.append("conversation_summary")
+        if parent_message_id:
+            context_source.append("parent_message_id")
+        return {
+            "follow_up_detected": follow_up_detected,
+            "active_topic": active_topic,
+            "resolved_entities": resolved_entities[:6],
+            "context_source": context_source,
+            "previous_user_message": (conversation_context.get("latest_user_message") or {}).get("content"),
+            "previous_assistant_excerpt": (conversation_context.get("latest_assistant_message") or {}).get("content"),
+            "conversation_summary": conversation_context.get("summary"),
+        }
+
+    def _is_conversation_follow_up(self, message: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(summarize this|summarize the|explain briefly|explain in brief|brief me|brief me more|explain in detail|make it simpler|give examples|compare them|what about (him|her|it|them)|continue|why|how|turn this into|show a chart|show a table|show a list|the previous answer|this|it|them|him|her)\b",
+                message,
+            )
+            or re.match(r"^(and|also|then|so|briefly|more|continue)\b", message)
+        )
+
+    def _summarize_messages(self, messages: list) -> str | None:
+        if not messages:
+            return None
+        snippets: list[str] = []
+        for item in messages[-8:]:
+            content = item.content.strip()
+            if not content:
+                continue
+            snippets.append(f"{item.role}: {content[:180]}")
+        return " | ".join(snippets)[:900] if snippets else None
+
+    def _extract_entities(self, messages: list[dict]) -> list[str]:
+        combined = " ".join(item.get("content", "") for item in messages)
+        title_case = re.findall(r"\b[A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,})?\b", combined)
+        ignored = {"Ceaser", "System", "Current", "User", "Assistant", "Important", "None"}
+        entities: list[str] = []
+        for item in title_case:
+            cleaned = item.strip()
+            if cleaned in ignored or cleaned in entities:
+                continue
+            entities.append(cleaned)
+        return entities[:8]
+
+    def _topic_from_previous_assistant(self, content: str) -> str | None:
+        match = re.search(r"\*\*(.+?)\*\*", content)
+        if match:
+            return match.group(1).split(":")[0].strip()
+        return None
+
+    def _topic_from_previous_user(self, content: str) -> str | None:
+        cleaned = re.sub(r"\b(explain|tell|about|me|compare|summarize|brief|please)\b", " ", content, flags=re.I)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?!")
+        return cleaned[:120] if cleaned else None
 
     def _infer_topic(self, messages: list[dict]) -> str | None:
         text = " ".join(item.get("content", "") for item in messages).lower()

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from pydantic import AliasChoices
@@ -134,6 +135,13 @@ class Settings(BaseSettings):
     rapidapi_news_search_paths_raw: str = Field(default="/search", alias="RAPIDAPI_NEWS_SEARCH_PATHS")
     rapidapi_news_latest_paths_raw: str = Field(default="/latest", alias="RAPIDAPI_NEWS_LATEST_PATHS")
     rapidapi_news_category_paths_raw: str = Field(default="/{category}", alias="RAPIDAPI_NEWS_CATEGORY_PATHS")
+    razorpay_key_id: str | None = Field(default=None, alias="RAZORPAY_KEY_ID")
+    razorpay_key_secret: str | None = Field(default=None, alias="RAZORPAY_KEY_SECRET")
+    razorpay_webhook_secret: str | None = Field(default=None, alias="RAZORPAY_WEBHOOK_SECRET")
+    razorpay_api_base_url: str = Field(default="https://api.razorpay.com/v1", alias="RAZORPAY_API_BASE_URL")
+    razorpay_checkout_name: str = Field(default="CEASER", alias="RAZORPAY_CHECKOUT_NAME")
+    razorpay_checkout_theme_color: str = Field(default="#6d4cff", alias="RAZORPAY_CHECKOUT_THEME_COLOR")
+    razorpay_plan_map_raw: str = Field(default="{}", alias="RAZORPAY_PLAN_MAP_JSON")
 
     @property
     def cors_origins(self) -> list[str]:
@@ -150,6 +158,25 @@ class Settings(BaseSettings):
     @property
     def rapidapi_news_category_paths(self) -> list[str]:
         return [path.strip() for path in self.rapidapi_news_category_paths_raw.split(",") if path.strip()]
+
+    @property
+    def razorpay_plan_map(self) -> dict[str, dict[str, str]]:
+        try:
+            parsed = json.loads(self.razorpay_plan_map_raw or "{}")
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        normalized: dict[str, dict[str, str]] = {}
+        for plan_code, intervals in parsed.items():
+            if not isinstance(intervals, dict):
+                continue
+            normalized[str(plan_code).upper()] = {
+                str(interval).lower(): str(plan_id)
+                for interval, plan_id in intervals.items()
+                if plan_id
+            }
+        return normalized
 
     @field_validator("database_url")
     @classmethod

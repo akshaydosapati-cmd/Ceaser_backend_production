@@ -39,15 +39,61 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     plan_id: Mapped[str] = mapped_column(ForeignKey("plans.id"), index=True, nullable=False)
     provider: Mapped[str] = mapped_column(String(40), default="test", nullable=False)
+    provider_plan_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_invoice_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    currency: Mapped[str] = mapped_column(String(10), default="INR", nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="active", index=True, nullable=False)
     billing_interval: Mapped[str] = mapped_column(String(20), default="monthly", nullable=False)
     current_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_renewal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     grace_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class BillingPayment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "billing_payments"
+    __table_args__ = (UniqueConstraint("provider", "provider_payment_id", name="uq_billing_payment_provider_payment"),)
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    subscription_id: Mapped[str | None] = mapped_column(ForeignKey("subscriptions.id", ondelete="SET NULL"), index=True, nullable=True)
+    plan_id: Mapped[str | None] = mapped_column(ForeignKey("plans.id", ondelete="SET NULL"), nullable=True)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_invoice_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), default="INR", nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="created", nullable=False)
+    method: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class BillingInvoice(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "billing_invoices"
+    __table_args__ = (UniqueConstraint("provider", "provider_invoice_id", name="uq_billing_invoice_provider_invoice"),)
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    subscription_id: Mapped[str | None] = mapped_column(ForeignKey("subscriptions.id", ondelete="SET NULL"), index=True, nullable=True)
+    plan_id: Mapped[str | None] = mapped_column(ForeignKey("plans.id", ondelete="SET NULL"), nullable=True)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_invoice_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    invoice_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), default="INR", nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="issued", nullable=False)
+    hosted_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class UsageLedger(UUIDPrimaryKeyMixin, TimestampMixin, Base):

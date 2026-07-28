@@ -30,6 +30,8 @@ def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_cu
             message=payload.message,
             conversation_id=payload.conversation_id,
             file_ids=payload.file_ids,
+            request_id=payload.request_id,
+            parent_message_id=payload.parent_message_id,
         )
         AuditService(db).record(
             user_id=user.id,
@@ -79,6 +81,8 @@ def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatReq
             message=payload.message,
             conversation_id=payload.conversation_id,
             file_ids=payload.file_ids,
+            request_id=payload.request_id,
+            parent_message_id=payload.parent_message_id,
         )
         background_task_store.set_result(task_id, response)
     except Exception:
@@ -117,6 +121,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 message=message,
                 conversation_id=conversation_id,
                 file_ids=file_ids,
+                request_id=payload.request_id or request_id,
+                parent_message_id=payload.parent_message_id,
             )
             stage_marks["prepared"] = perf_counter()
             trace["retrieval_time_ms"] = prepared.get("observability", {}).get("retrieval_time_ms")

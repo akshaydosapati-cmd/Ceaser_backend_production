@@ -3,6 +3,8 @@ from app.models.audit_log import AuditLog
 from app.models.automation import Automation, AutomationRun, AutomationTemplate
 from app.models.commercial import (
     BillingEvent,
+    BillingInvoice,
+    BillingPayment,
     Institution,
     InstitutionDomain,
     Plan,
@@ -34,6 +36,8 @@ __all__ = [
     "AutomationRun",
     "AutomationTemplate",
     "BillingEvent",
+    "BillingInvoice",
+    "BillingPayment",
     "Conversation",
     "Draft",
     "DraftHistory",

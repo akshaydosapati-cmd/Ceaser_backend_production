@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.api.auth.routes import router as auth_router
 from app.api.automations.routes import router as automations_router
 from app.api.agents.routes import router as agents_router
+from app.api.billing.routes import router as billing_router
 from app.api.capabilities.routes import router as capabilities_router
 from app.api.ceaser.routes import router as ceaser_router
 from app.api.commercial.routes import router as commercial_router
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(messages_router)
     app.include_router(chat_router)
     app.include_router(ceaser_router)
+    app.include_router(billing_router)
     app.include_router(commercial_router)
     app.include_router(memories_router)
     app.include_router(projects_router)
