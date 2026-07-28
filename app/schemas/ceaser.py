@@ -61,6 +61,13 @@ class WorkflowResponse(BaseModel):
     summary: str
 
 
+class SuggestionResponse(BaseModel):
+    text: str
+    action_type: str
+    category: str
+    confidence: float
+
+
 class CeaserChatResponse(BaseModel):
     scope: str
     conversation_id: str | None = None
@@ -71,4 +78,5 @@ class CeaserChatResponse(BaseModel):
     research: ResearchResultResponse | None = None
     workflow: WorkflowResponse | None = None
     context_summary: dict
+    suggestions: list[SuggestionResponse] = Field(default_factory=list)
     response: str

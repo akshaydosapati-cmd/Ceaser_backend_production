@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import asyncio
 import threading
+from dataclasses import asdict
 from time import perf_counter
 from typing import Any
 from datetime import date, datetime, timedelta
@@ -19,6 +20,7 @@ from app.services.orchestrator.context_builder import ContextBuilder
 from app.services.orchestrator.memory_capture import MemoryCapture
 from app.services.orchestrator.memory_retriever import MemoryRetriever
 from app.services.orchestrator.response_pipeline import ResponsePipeline
+from app.services.orchestrator.suggestion_engine import SuggestionEngine
 from app.services.orchestrator.user_context_resolver import UserContextResolver
 from app.services.workflows import WorkflowOrchestrator
 from app.services.integrations import IntegrationManager
@@ -44,6 +46,7 @@ class CeaserOrchestrator:
         self.files = FileRepository(db)
         self.workflow_orchestrator = WorkflowOrchestrator(db)
         self.response_pipeline = ResponsePipeline()
+        self.suggestion_engine = SuggestionEngine()
 
     def handle_message(self, user_id: str, message: str, conversation_id: str | None = None, file_ids: list[str] | None = None) -> dict:
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
@@ -167,6 +170,18 @@ class CeaserOrchestrator:
                 "attached_document_count": len(attached_documents),
                 "workflow_id": workflow.workflow_id,
             },
+            "suggestions": [
+                asdict(item)
+                for item in self._generate_suggestions(
+                    user_query=message,
+                    response_text=final_response,
+                    conversation=conversation,
+                    conversation_context=conversation_context,
+                    intent=knowledge_context.get("intent"),
+                    retrieval_scope=knowledge_context.get("retrieval_scope"),
+                    output_format=knowledge_context.get("output_format"),
+                )
+            ],
             "response": final_response,
         }
         if conversation:
@@ -405,6 +420,18 @@ class CeaserOrchestrator:
                 "selected_chunks": prepared.get("observability", {}).get("selected_chunks"),
                 "cache_hit": prepared.get("observability", {}).get("cache_hit"),
             },
+            "suggestions": [
+                asdict(item)
+                for item in self._generate_suggestions(
+                    user_query=prepared["message"],
+                    response_text=final_response,
+                    conversation=prepared.get("conversation"),
+                    conversation_context=prepared.get("conversation_context"),
+                    intent=prepared.get("knowledge_context", {}).get("intent"),
+                    retrieval_scope=prepared.get("observability", {}).get("retrieval_scope"),
+                    output_format=prepared.get("knowledge_context", {}).get("output_format"),
+                )
+            ],
             "response": final_response,
         }
         conversation = prepared.get("conversation")
@@ -533,6 +560,18 @@ class CeaserOrchestrator:
                 "workflow_id": None,
                 "direct_response_type": workflow_type,
             },
+            "suggestions": [
+                asdict(item)
+                for item in self._generate_suggestions(
+                    user_query=conversation_context.get("messages", [{}])[-1].get("content", "") if conversation_context.get("messages") else response,
+                    response_text=response,
+                    conversation=conversation,
+                    conversation_context=conversation_context,
+                    intent=workflow_type,
+                    retrieval_scope="direct",
+                    output_format="chat",
+                )
+            ],
             "response": response,
         }
         if conversation:
@@ -544,6 +583,44 @@ class CeaserOrchestrator:
                 ingest_knowledge=False,
             )
         return response_payload
+
+    def _generate_suggestions(
+        self,
+        *,
+        user_query: str,
+        response_text: str,
+        conversation: Conversation | None,
+        conversation_context: dict | None,
+        intent: str | None,
+        retrieval_scope: str | None,
+        output_format: str | None,
+    ) -> list:
+        return self.suggestion_engine.generate(
+            user_query=user_query,
+            response_text=response_text,
+            intent=intent,
+            retrieval_scope=retrieval_scope,
+            output_format=output_format,
+            conversation_context=conversation_context,
+            recent_suggestions=self._recent_suggestions(conversation),
+        )
+
+    def _recent_suggestions(self, conversation: Conversation | None) -> list[str]:
+        if not conversation:
+            return []
+        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=12)
+        recent: list[str] = []
+        for item in messages[-6:]:
+            metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+            suggestions = metadata.get("suggestions") or []
+            if not isinstance(suggestions, list):
+                continue
+            for suggestion in suggestions:
+                if isinstance(suggestion, dict) and suggestion.get("text"):
+                    recent.append(str(suggestion["text"]))
+                elif isinstance(suggestion, str):
+                    recent.append(suggestion)
+        return recent
 
     def _maybe_calendar_response(self, user_id: str, message: str) -> str | None:
         normalized = message.lower()
