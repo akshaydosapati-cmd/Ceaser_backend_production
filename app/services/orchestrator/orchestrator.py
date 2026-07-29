@@ -83,6 +83,8 @@ class CeaserOrchestrator:
                     "attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents],
                     "follow_up_detected": follow_up_trace["follow_up_detected"],
                     "active_topic": follow_up_trace["active_topic"],
+                    "active_subtopic": follow_up_trace.get("active_subtopic"),
+                    "last_user_intent": follow_up_trace.get("follow_up_intent"),
                     "resolved_entities": follow_up_trace["resolved_entities"],
                     "context_source": follow_up_trace["context_source"],
                 },
@@ -91,7 +93,9 @@ class CeaserOrchestrator:
             if conversation.title == "New Chat":
                 self.conversations.rename(conversation, self.conversations.generate_title(message))
 
-        calendar_response = self._maybe_calendar_response(user_id=user_id, message=effective_message)
+        # Integration routing must use the user's actual text, never the
+        # contextual prompt wrapper added for a follow-up response.
+        calendar_response = self._maybe_calendar_response(user_id=user_id, message=message)
         if calendar_response:
             return self._direct_response(
                 user_id=user_id,
@@ -107,7 +111,7 @@ class CeaserOrchestrator:
                 parent_message_id=parent_message_id,
             )
 
-        integration_response = self._maybe_integration_response(user_id=user_id, message=effective_message)
+        integration_response = self._maybe_integration_response(user_id=user_id, message=message)
         if integration_response:
             return self._direct_response(
                 user_id=user_id,
@@ -298,6 +302,8 @@ class CeaserOrchestrator:
                     "attached_files": [{"id": item["id"], "name": item["name"], "file_type": item["file_type"]} for item in attached_documents],
                     "follow_up_detected": follow_up_trace["follow_up_detected"],
                     "active_topic": follow_up_trace["active_topic"],
+                    "active_subtopic": follow_up_trace.get("active_subtopic"),
+                    "last_user_intent": follow_up_trace.get("follow_up_intent"),
                     "resolved_entities": follow_up_trace["resolved_entities"],
                     "context_source": follow_up_trace["context_source"],
                 },
@@ -306,7 +312,7 @@ class CeaserOrchestrator:
             if conversation.title == "New Chat":
                 self.conversations.rename(conversation, self.conversations.generate_title(message))
 
-        calendar_response = self._maybe_calendar_response(user_id=user_id, message=effective_message)
+        calendar_response = self._maybe_calendar_response(user_id=user_id, message=message)
         if calendar_response:
             return {
                 "mode": "direct",
@@ -323,7 +329,7 @@ class CeaserOrchestrator:
                 "parent_message_id": parent_message_id,
             }
 
-        integration_response = self._maybe_integration_response(user_id=user_id, message=effective_message)
+        integration_response = self._maybe_integration_response(user_id=user_id, message=message)
         if integration_response:
             return {
                 "mode": "direct",
@@ -851,13 +857,16 @@ class CeaserOrchestrator:
         normalized = message.lower()
         provider_id = None
         label = None
-        if re.search(r"\b(gmail|email|emails|inbox|mail)\b", normalized):
-            provider_id, label = "gmail", "Gmail"
-        elif re.search(r"\b(google drive|drive files|drive|my files)\b", normalized):
+        # Integrations are opt-in.  A normal question, including a contextual
+        # follow-up, must never be converted into an integration request just
+        # because a broad keyword happens to appear.
+        if self._is_explicit_google_drive_request(normalized):
             provider_id, label = "google-drive", "Google Drive"
-        elif re.search(r"\b(google tasks|tasks|todo|to-do|to do)\b", normalized):
+        elif self._is_explicit_gmail_request(normalized):
+            provider_id, label = "gmail", "Gmail"
+        elif re.search(r"\b(?:show|list|read|find|check|sync)\b.{0,40}\b(?:google tasks|my tasks|my todo|my to-do)\b", normalized):
             provider_id, label = "google-tasks", "Google Tasks"
-        elif re.search(r"\b(classroom|assignments|coursework|courses)\b", normalized):
+        elif re.search(r"\b(?:show|list|read|find|check|sync)\b.{0,40}\b(?:google classroom|my assignments|my coursework)\b", normalized):
             provider_id, label = "google-classroom", "Google Classroom"
         if not provider_id:
             return None
@@ -888,6 +897,16 @@ class CeaserOrchestrator:
             detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
             lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
         return "\n".join(lines)
+
+    def _is_explicit_google_drive_request(self, message: str) -> bool:
+        drive_reference = bool(re.search(r"\b(?:google drive|my drive|drive (?:file|files|document|documents|folder|folders)|my files)\b", message))
+        data_action = bool(re.search(r"\b(?:read|find|search|open|summarize|use|show|list|look up|check|retrieve|scan)\b", message))
+        return drive_reference and data_action
+
+    def _is_explicit_gmail_request(self, message: str) -> bool:
+        gmail_reference = bool(re.search(r"\b(?:gmail|my inbox|my emails?|my mail)\b", message))
+        data_action = bool(re.search(r"\b(?:read|find|search|show|list|check|sync)\b", message))
+        return gmail_reference and data_action
 
     def _maybe_identity_memory_response(self, user_id: str, message: str) -> str | None:
         normalized = message.strip()
@@ -1102,11 +1121,15 @@ class CeaserOrchestrator:
                 "latest_user_message": None,
                 "latest_assistant_message": None,
                 "active_topic": None,
+                "active_subtopic": None,
+                "last_user_intent": None,
                 "message_ids": [],
                 "named_entities": [],
             }
 
-        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=40)
+        # Read all available turns before resolving the next one.  Only the
+        # recent portion is sent verbatim to a model; older turns are compacted.
+        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=None)
         recent_messages = messages[-12:]
         older_messages = messages[:-12]
         compact_messages = []
@@ -1146,19 +1169,26 @@ class CeaserOrchestrator:
                     "research_query": research.get("query") if research else None,
                 }
             )
+        history_messages = [{"role": item.role, "content": item.content[:1600]} for item in messages]
         named_entities = self._extract_entities(compact_messages)
-        active_topic = self._active_topic_from_messages(compact_messages)
+        active_topic = self._active_topic_from_messages(history_messages)
+        active_subtopic = self._active_subtopic_from_messages(history_messages, active_topic)
         return {
-            "messages": compact_messages,
+            # The response pipeline receives every stored turn in chronological
+            # order.  Recent messages remain available separately for compact
+            # metadata, but no generation is reduced to the final user message.
+            "messages": history_messages,
             "previous_research": previous_research,
             "inferred_topic": self._infer_topic(compact_messages),
             "summary": self._summarize_messages(older_messages),
-            "history_message_count": len(recent_messages),
-            "history_token_count": max(1, round(sum(len(item.get("content", "")) for item in compact_messages) / 4)),
+            "history_message_count": len(messages),
+            "history_token_count": max(1, round(sum(len(item.get("content", "")) for item in history_messages) / 4)),
             "latest_user_message": latest_user_message,
             "latest_assistant_message": latest_assistant_message,
             "active_topic": active_topic,
-            "message_ids": [item.id for item in recent_messages],
+            "active_subtopic": active_subtopic,
+            "last_user_intent": self._last_user_intent_from_messages(history_messages, active_topic),
+            "message_ids": [item.id for item in messages],
             "named_entities": named_entities,
         }
 
@@ -1290,6 +1320,7 @@ class CeaserOrchestrator:
         summary = (follow_up_trace.get("conversation_summary") or "").strip()
         entities = ", ".join(follow_up_trace.get("resolved_entities") or [])
         intent = follow_up_trace.get("follow_up_intent") or "expand"
+        subtopic = (follow_up_trace.get("active_subtopic") or "").strip()
         instruction_by_intent = {
             "continue": "Continue from the last useful point. Do not repeat the answer already given.",
             "simplify": "Explain the active topic in simpler language while keeping the topic unchanged.",
@@ -1297,12 +1328,14 @@ class CeaserOrchestrator:
             "examples": "Give concrete examples that clarify the active topic.",
             "history": "Answer the history aspect of the active topic.",
             "why_how": "Answer the user's why/how question about the active topic.",
+            "subtopic": "Treat this as a subtopic of the active topic. Keep the main topic and focus on this specific part.",
             "expand": "Expand the prior answer with new, useful detail; do not define the wording of the follow-up in isolation.",
         }
         return "\n\n".join(
             [
                 "System instruction: Resolve the current request using the active conversation topic. Do not treat vague words such as 'depth', 'detail', 'more', 'continue', 'it', or 'this' as independent topics. Do not describe CEASER unless explicitly asked.",
                 f"Active topic: {topic}",
+                f"Active subtopic: {subtopic or 'None'}",
                 f"Follow-up intent: {intent}",
                 instruction_by_intent.get(intent, instruction_by_intent["expand"]),
                 f"Resolved entities: {entities or topic}",
@@ -1326,12 +1359,15 @@ class CeaserOrchestrator:
             or self._topic_from_previous_assistant(latest_assistant_content)
             or self._topic_from_previous_user(latest_user_content)
         )
-        resolution = self._resolve_conversation_turn(message, prior_topic)
+        prior_subtopic = conversation_context.get("active_subtopic")
+        resolution = self._resolve_conversation_turn(message, prior_topic, prior_subtopic)
         active_topic = resolution.get("active_topic") or prior_topic
+        active_subtopic = resolution.get("active_subtopic") or prior_subtopic
         # A clearly introduced subject becomes the new active topic.  A vague
         # request stays attached to the existing one.
         if resolution.get("new_topic"):
             active_topic = resolution.get("explicit_topic") or active_topic
+            active_subtopic = None
         if not active_topic:
             active_topic = (
             previous_research.get("query")
@@ -1356,6 +1392,7 @@ class CeaserOrchestrator:
             "follow_up_detected": follow_up_detected,
             "follow_up_intent": resolution.get("intent"),
             "active_topic": active_topic,
+            "active_subtopic": active_subtopic,
             "resolved_entities": resolved_entities[:6],
             "context_source": context_source,
             "previous_user_message": latest_user_content,
@@ -1366,7 +1403,7 @@ class CeaserOrchestrator:
     def _is_conversation_follow_up(self, message: str) -> bool:
         return bool(self._resolve_conversation_turn(message, None).get("follow_up_detected"))
 
-    def _resolve_conversation_turn(self, message: str, prior_topic: str | None) -> dict:
+    def _resolve_conversation_turn(self, message: str, prior_topic: str | None, prior_subtopic: str | None = None) -> dict:
         """Classify a turn before generating an answer.
 
         Short requests are deliberately resolved against the active topic.  This
@@ -1374,6 +1411,7 @@ class CeaserOrchestrator:
         explain the word "depth".
         """
         normalized = re.sub(r"\s+", " ", message.lower()).strip(" .?!")
+        explicit_subtopic = self._extract_subtopic_request(message, prior_topic)
         explicit_topic = self._extract_explicit_topic(message)
         follow_up_patterns = {
             "continue": r"^(continue|go on|keep going|carry on|what else)(?:\s+please)?$|\bcontinue (?:from|with)\b",
@@ -1390,6 +1428,16 @@ class CeaserOrchestrator:
         is_short = len(normalized.split()) <= 7
         vague_follow_up = bool(intent or pronoun_reference or connector)
 
+        if explicit_subtopic and prior_topic:
+            return {
+                "follow_up_detected": True,
+                "new_topic": False,
+                "explicit_topic": None,
+                "active_topic": prior_topic,
+                "active_subtopic": explicit_subtopic,
+                "intent": "subtopic",
+            }
+
         # An explicit meaningful subject only replaces the active topic when it
         # is not simply a follow-up instruction such as "explain in detail".
         if explicit_topic and not (vague_follow_up and is_short):
@@ -1398,6 +1446,7 @@ class CeaserOrchestrator:
                 "new_topic": True,
                 "explicit_topic": explicit_topic,
                 "active_topic": explicit_topic,
+                "active_subtopic": None,
                 "intent": "new_topic",
             }
         return {
@@ -1405,8 +1454,37 @@ class CeaserOrchestrator:
             "new_topic": False,
             "explicit_topic": None,
             "active_topic": prior_topic,
+            "active_subtopic": prior_subtopic,
             "intent": intent or "expand",
         }
+
+    def _extract_subtopic_request(self, message: str, prior_topic: str | None) -> str | None:
+        if not prior_topic:
+            return None
+        normalized = re.sub(r"\s+", " ", message).strip(" .?!")
+        history_match = re.search(r"\b(?:its|the)\s+(history|culture|geography|economy|tourism|architecture|food|education|transportation)\b", normalized, flags=re.I)
+        if history_match:
+            return history_match.group(1).title()
+        about_match = re.fullmatch(r"(?:what|how) about (?:the )?(.+)", normalized, flags=re.I)
+        if about_match:
+            candidate = about_match.group(1).strip(" .?!")
+            if candidate and len(candidate.split()) <= 8:
+                return candidate.title()
+        generic_subtopics = {
+            "history", "culture", "tourism", "geography", "economy", "architecture",
+            "food", "education", "transportation", "festivals", "rulers", "dynasty",
+            "wodeyars", "wodeyar",
+        }
+        topic_match = re.fullmatch(
+            r"(?:now\s+)?(?:explain|tell me about|describe)\s+(?:the\s+)?(.+)",
+            normalized,
+            flags=re.I,
+        )
+        if topic_match:
+            candidate = topic_match.group(1).strip(" .?!").lower()
+            if candidate in generic_subtopics:
+                return candidate.title()
+        return None
 
     def _extract_explicit_topic(self, message: str) -> str | None:
         value = re.sub(r"\s+", " ", message).strip(" .?!")
@@ -1433,19 +1511,41 @@ class CeaserOrchestrator:
         ))
 
     def _active_topic_from_messages(self, messages: list[dict]) -> str | None:
-        """Return the latest user-introduced topic, skipping vague follow-ups."""
-        for item in reversed(messages):
+        """Replay user turns so topic changes and subtopics stay distinct."""
+        active_topic = None
+        active_subtopic = None
+        for item in messages:
             if item.get("role") != "user":
                 continue
-            content = item.get("content", "")
-            topic = self._extract_explicit_topic(content)
-            if topic:
-                return topic
+            resolution = self._resolve_conversation_turn(item.get("content", ""), active_topic, active_subtopic)
+            if resolution.get("new_topic"):
+                active_topic = resolution.get("active_topic")
+                active_subtopic = None
+            elif resolution.get("active_topic"):
+                active_topic = resolution.get("active_topic")
+                active_subtopic = resolution.get("active_subtopic") or active_subtopic
+        return active_topic
+
+    def _active_subtopic_from_messages(self, messages: list[dict], topic: str | None) -> str | None:
+        active_topic = None
+        active_subtopic = None
+        for item in messages:
+            if item.get("role") != "user":
+                continue
+            resolution = self._resolve_conversation_turn(item.get("content", ""), active_topic, active_subtopic)
+            if resolution.get("new_topic"):
+                active_topic = resolution.get("active_topic")
+                active_subtopic = None
+            elif resolution.get("active_topic"):
+                active_topic = resolution.get("active_topic")
+                active_subtopic = resolution.get("active_subtopic") or active_subtopic
+        return active_subtopic if active_topic == topic else None
+
+    def _last_user_intent_from_messages(self, messages: list[dict], topic: str | None) -> str | None:
+        subtopic = self._active_subtopic_from_messages(messages, topic)
         for item in reversed(messages):
-            if item.get("role") == "assistant":
-                topic = self._topic_from_previous_assistant(item.get("content", ""))
-                if topic:
-                    return topic
+            if item.get("role") == "user":
+                return self._resolve_conversation_turn(item.get("content", ""), topic, subtopic).get("intent")
         return None
 
     def _summarize_messages(self, messages: list) -> str | None:

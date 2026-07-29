@@ -39,6 +39,19 @@ class ResponsePipeline:
         documents = self._document_context(intent=intent, documents=context.get("documents", []))
         memories = context.get("memories", []) or []
         conversation = context.get("conversation", []) or []
+        conversation_history = self._format_conversation_history(conversation)
+        conversation_summary = context.get("conversation_summary") or "None"
+        follow_up_trace = context.get("follow_up_trace", {}) or {}
+        active_topic = follow_up_trace.get("active_topic") or "None"
+        active_subtopic = follow_up_trace.get("active_subtopic") or "None"
+        continuity_context = "\n".join(
+            [
+                f"Active topic: {active_topic}",
+                f"Active subtopic: {active_subtopic}",
+                f"Conversation history (chronological):\n{conversation_history or 'None'}",
+                f"Older conversation summary: {conversation_summary}",
+            ]
+        )
         research = context.get("research_result")
         merged_contributions = context.get("merged_contributions", {}) or {}
         evidence = knowledge_context.get("evidence", "")
@@ -47,6 +60,7 @@ class ResponsePipeline:
             context_text = "\n\n".join(
                 [
                     f"User request:\n{message}",
+                    continuity_context,
                     f"File metadata:\n{documents}",
                     f"Document evidence:\n{evidence}",
                 ]
@@ -61,22 +75,24 @@ class ResponsePipeline:
 
         if retrieval_scope == "none" and not documents and not memories and not evidence and not research:
             instructions = (
-                "You are CEASER, a personal AI operating system. Answer the user's request directly, clearly, and naturally. "
+                "You are CEASER, a context-persistent personal AI operating system. Answer using the chronological conversation history below, "
+                "not the final user message in isolation. Continue the active topic/subtopic unless the user clearly introduces a new topic. "
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
-            return instructions, f"User request:\n{message}"
+            return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
 
         if retrieval_scope == "conversation_only" and conversation and not documents and not memories and not evidence:
             instructions = (
-                "You are CEASER, a personal AI operating system. Continue the conversation naturally using only the recent chat context below. "
+                "You are CEASER, a context-persistent personal AI operating system. Continue the conversation naturally using the chronological chat history below. "
                 "Do not repeat yourself, and answer directly. "
                 f"{detail_policy}"
             )
-            return instructions, "\n\n".join([f"User request:\n{message}", f"Recent conversation:\n{conversation}"])
+            return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
 
         instructions = (
-            "You are CEASER, a personal AI operating system. Answer the user's request directly. "
+            "You are CEASER, a context-persistent personal AI operating system. Answer the user's request using the chronological conversation history and active topic below. "
+            "Do not process the latest request in isolation; continue the active topic/subtopic unless a new topic is explicit. "
             "Use the provided CEASER context, memories, research, files, and project details when relevant. "
             "Choose the response format that matches the task. Do not force every answer into Executive Summary, Key Trends, and Recommendations. "
             "Do not mention internal orchestration, selected agents, or framework names unless the user asks. "
@@ -86,8 +102,8 @@ class ResponsePipeline:
         context_text = "\n\n".join(
                 [
                     f"User request:\n{message}",
+                    continuity_context,
                     f"Memories:\n{memories}",
-                    f"Conversation:\n{conversation}",
                     f"Documents:\n{documents}",
                     f"Knowledge evidence:\n{evidence}",
                     f"Research:\n{research}",
@@ -95,6 +111,17 @@ class ResponsePipeline:
                 ]
             )
         return instructions, context_text
+
+    def _format_conversation_history(self, conversation: list[dict]) -> str:
+        """Preserve the speaker roles so an LLM can resolve follow-up turns."""
+        lines: list[str] = []
+        for turn in conversation:
+            role = str(turn.get("role", "user")).strip().lower()
+            label = "Assistant" if role == "assistant" else "User"
+            content = str(turn.get("content", "")).strip()
+            if content:
+                lines.append(f"{label}: {content}")
+        return "\n".join(lines)
 
     def _detail_policy(self, message: str) -> str:
         normalized = message.lower()

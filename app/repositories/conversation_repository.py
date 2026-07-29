@@ -44,11 +44,14 @@ class ConversationRepository:
         self.db.delete(conversation)
         self.db.flush()
 
-    def list_messages(self, conversation_id: str | None = None, limit: int = 100, offset: int = 0) -> list[Message]:
+    def list_messages(self, conversation_id: str | None = None, limit: int | None = 100, offset: int = 0) -> list[Message]:
         query = self.db.query(Message)
         if conversation_id:
             query = query.filter(Message.conversation_id == conversation_id)
-        return query.order_by(Message.created_at.asc()).offset(offset).limit(limit).all()
+        query = query.order_by(Message.created_at.asc()).offset(offset)
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
 
     def create_message(self, conversation_id: str, role: str, content: str, metadata: dict | None = None) -> Message:
         message = Message(conversation_id=conversation_id, role=role, content=content, extra_metadata=metadata or {})

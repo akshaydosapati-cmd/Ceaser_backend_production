@@ -41,7 +41,7 @@ class ConversationService:
         self.conversations.delete(conversation)
         self.db.commit()
 
-    def list_messages(self, conversation_id: str | None = None, limit: int = 100, offset: int = 0) -> list[Message]:
+    def list_messages(self, conversation_id: str | None = None, limit: int | None = 100, offset: int = 0) -> list[Message]:
         return self.conversations.list_messages(conversation_id=conversation_id, limit=limit, offset=offset)
 
     def create_message(
