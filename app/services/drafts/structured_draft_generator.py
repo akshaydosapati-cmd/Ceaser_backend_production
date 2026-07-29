@@ -56,20 +56,47 @@ class StructuredDraftGenerator:
             )
             logger.info("Raw structured draft provider response (%s/%s): %s", agent_id, draft_type, response)
             try:
-                return DraftValidator().validate(self._extract_json(response), draft_type)
+                content = self._normalize_draft_content(
+                    self._extract_json(response),
+                    draft_type=draft_type,
+                    prompt=prompt,
+                    title=title,
+                    agent_id=agent_id,
+                    target_app=effective_target,
+                    requested_units=requested_units,
+                )
+                return DraftValidator().validate(content, draft_type)
             except (DraftValidationError, json.JSONDecodeError, TypeError) as exc:
                 last_error = str(exc)
                 logger.warning("Structured draft validation failed (%s/%s/%s): %s", agent_id, draft_type, strictness, exc)
                 try:
                     repaired = self._repair_response(response=response, error=str(exc), schema=schema)
-                    return DraftValidator().validate(self._extract_json(repaired), draft_type)
+                    content = self._normalize_draft_content(
+                        self._extract_json(repaired),
+                        draft_type=draft_type,
+                        prompt=prompt,
+                        title=title,
+                        agent_id=agent_id,
+                        target_app=effective_target,
+                        requested_units=requested_units,
+                    )
+                    return DraftValidator().validate(content, draft_type)
                 except (DraftValidationError, json.JSONDecodeError, TypeError) as repair_exc:
                     last_error = str(repair_exc)
                     logger.warning("Structured draft repair failed (%s/%s/%s): %s", agent_id, draft_type, strictness, repair_exc)
                 continue
         logger.error("Gemini structured draft failed; using deterministic fallback (%s/%s): %s", agent_id, draft_type, last_error)
         fallback = self._fallback_content(prompt=prompt, title=title, draft_type=draft_type, agent_id=agent_id, target_app=effective_target, requested_units=requested_units)
-        return DraftValidator().validate(self._ensure_schema_keys(fallback, schema, prompt=prompt, title=title, agent_id=agent_id), draft_type)
+        fallback = self._normalize_draft_content(
+            self._ensure_schema_keys(fallback, schema, prompt=prompt, title=title, agent_id=agent_id),
+            draft_type=draft_type,
+            prompt=prompt,
+            title=title,
+            agent_id=agent_id,
+            target_app=effective_target,
+            requested_units=requested_units,
+        )
+        return DraftValidator().validate(fallback, draft_type)
 
     def _uses_section_pipeline(self, draft_type: str) -> bool:
         return draft_type in {
@@ -641,10 +668,7 @@ class StructuredDraftGenerator:
                 "resources": ["Uploaded notes", "Relevant class material", "CEASER-generated summaries"],
             }
         if draft_type in {"execution_plan", "task_breakdown", "project_tracker", "workflow_plan", "learning_roadmap"}:
-            milestones = [
-                {"name": heading, "tasks": self._bullets(heading, topic, agent_id), "priority": "High" if index == 0 else "Medium", "deadline": f"Phase {index + 1}", "status": "Planned"}
-                for index, heading in enumerate(self._headings_for(draft_type, count))
-            ]
+            milestones = self._execution_milestones(topic=topic, draft_type=draft_type, agent_id=agent_id, count=count)
             return {
                 **base,
                 "objective": f"Move {topic} from idea to completed execution.",
@@ -657,7 +681,7 @@ class StructuredDraftGenerator:
                 "risks": self._recommendations("Risks", topic),
                 "follow_ups": ["Review progress", "Resolve blockers", "Prepare next workflow"],
                 "status_columns": ["Planned", "In Progress", "Review", "Completed"],
-                "steps": self._recommendations("Steps", topic),
+                "steps": [task for milestone in milestones for task in milestone["tasks"][:1]],
                 "automations": [],
                 "resources": ["CEASER memory", "Uploaded files", "User instructions"],
                 "practice": [],
@@ -705,6 +729,114 @@ class StructuredDraftGenerator:
             else:
                 result[field] = None
         return result
+
+    def _normalize_draft_content(
+        self,
+        content: dict,
+        *,
+        draft_type: str,
+        prompt: str,
+        title: str,
+        agent_id: str,
+        target_app: str,
+        requested_units: int,
+    ) -> dict:
+        if draft_type not in {"execution_plan", "task_breakdown", "project_tracker", "workflow_plan", "learning_roadmap"}:
+            return content
+        topic = self._topic(prompt, title)
+        count = max(3, min(requested_units, 12))
+        fallback_milestones = self._execution_milestones(topic=topic, draft_type=draft_type, agent_id=agent_id, count=count)
+        existing = content.get("milestones")
+        normalized = []
+        if isinstance(existing, list):
+            for index, item in enumerate(existing[:count]):
+                source = item if isinstance(item, dict) else {}
+                fallback = fallback_milestones[min(index, len(fallback_milestones) - 1)]
+                name = str(source.get("name") or source.get("title") or "").strip()
+                tasks = source.get("tasks")
+                normalized.append(
+                    {
+                        "name": name if self._useful_label(name, {"milestone", "phase", "step"}) else fallback["name"],
+                        "tasks": tasks if isinstance(tasks, list) and any(str(task).strip() for task in tasks) else fallback["tasks"],
+                        "priority": source.get("priority") or fallback["priority"],
+                        "deadline": source.get("deadline") or fallback["deadline"],
+                        "status": source.get("status") or fallback["status"],
+                    }
+                )
+        if len(normalized) < len(fallback_milestones):
+            normalized.extend(fallback_milestones[len(normalized):])
+        content["milestones"] = normalized or fallback_milestones
+        content["objective"] = content.get("objective") or f"Move {topic} from idea to completed execution."
+        content["project"] = content.get("project") or topic
+        content["workflow"] = content.get("workflow") or topic
+        content["tasks"] = [task for milestone in content["milestones"] for task in milestone["tasks"][:2]]
+        content["owners"] = content.get("owners") if isinstance(content.get("owners"), list) else [agent_id]
+        content["dependencies"] = content.get("dependencies") if isinstance(content.get("dependencies"), list) else ["Project requirements", "Available files and context"]
+        content["risks"] = content.get("risks") if isinstance(content.get("risks"), list) else self._recommendations("Risks", topic)
+        content["follow_ups"] = content.get("follow_ups") if isinstance(content.get("follow_ups"), list) else ["Review milestone owners", "Confirm timeline", "Track next sprint"]
+        content["status_columns"] = content.get("status_columns") if isinstance(content.get("status_columns"), list) else ["Planned", "In Progress", "Review", "Completed"]
+        content["steps"] = content.get("steps") if isinstance(content.get("steps"), list) else [task for milestone in content["milestones"] for task in milestone["tasks"][:1]]
+        return content
+
+    def _execution_milestones(self, *, topic: str, draft_type: str, agent_id: str, count: int) -> list[dict]:
+        subject = self._business_subject(topic)
+        lower = topic.lower()
+        if "car rental" in lower or ("rental" in lower and "car" in lower):
+            names = [
+                "Define Rental Requirements",
+                "Design Vehicle Inventory",
+                "Build Customer Booking Flow",
+                "Add Pricing And Availability",
+                "Set Up Payments And Deposits",
+                "Create Admin Operations",
+                "Test End-To-End Rentals",
+                "Launch And Monitor Usage",
+            ]
+            task_bank = {
+                "Define Rental Requirements": ["List customer, admin, and fleet manager roles.", "Define pickup, drop-off, cancellation, and late return rules.", "Document required customer KYC and licence checks."],
+                "Design Vehicle Inventory": ["Create vehicle categories, availability status, pricing, and location fields.", "Add images, features, fuel type, seats, and registration details.", "Define maintenance and unavailable vehicle states."],
+                "Build Customer Booking Flow": ["Let users search by dates, location, vehicle type, and price.", "Show booking summary before confirmation.", "Capture customer details and rental terms acceptance."],
+                "Add Pricing And Availability": ["Calculate base price, taxes, deposit, discounts, and extra charges.", "Prevent double booking for the same vehicle and time range.", "Add calendar-based availability checks."],
+                "Set Up Payments And Deposits": ["Create secure checkout for booking payments.", "Track payment status, refund status, and deposit collection.", "Send booking confirmation after successful payment."],
+                "Create Admin Operations": ["Build admin views for bookings, vehicles, customers, and payments.", "Allow staff to approve, modify, cancel, and close bookings.", "Add operational status tracking for pickup and return."],
+                "Test End-To-End Rentals": ["Test search, booking, payment, cancellation, and return scenarios.", "Verify edge cases for unavailable cars and failed payments.", "Check mobile responsiveness and admin workflows."],
+                "Launch And Monitor Usage": ["Launch with a small vehicle set and limited locations.", "Track bookings, cancellations, revenue, and support issues.", "Improve pricing and operations from real usage data."],
+            }
+        else:
+            names = [
+                "Clarify Scope And Users",
+                "Map Core Workflow",
+                "Define Data And Permissions",
+                "Build Primary Experience",
+                "Connect Payments Or Integrations",
+                "Create Admin Controls",
+                "Test Critical Scenarios",
+                "Launch And Improve",
+            ]
+            task_bank = {name: self._execution_tasks(name, subject, agent_id) for name in names}
+        selected = names[: max(3, min(count, len(names)))]
+        return [
+            {
+                "name": name,
+                "tasks": task_bank[name],
+                "priority": "High" if index < 2 else "Medium",
+                "deadline": f"Week {index + 1}" if index < len(selected) - 1 else "Ongoing",
+                "status": "Planned",
+            }
+            for index, name in enumerate(selected)
+        ]
+
+    def _execution_tasks(self, milestone: str, subject: str, agent_id: str) -> list[str]:
+        return [
+            f"Define the concrete outcome for {subject} in this phase.",
+            f"Assign {agent_id.title()} to track blockers, decisions, and next actions.",
+            "Convert the phase into tasks that can be reviewed weekly.",
+        ]
+
+    @staticmethod
+    def _useful_label(value: str, banned: set[str]) -> bool:
+        cleaned = value.strip().lower()
+        return bool(cleaned) and cleaned not in banned and len(cleaned) > 4
 
     @staticmethod
     def _schema_text(key: str, topic: str) -> str:
