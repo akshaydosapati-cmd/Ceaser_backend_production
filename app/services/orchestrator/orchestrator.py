@@ -1101,6 +1101,7 @@ class CeaserOrchestrator:
                 "history_token_count": 0,
                 "latest_user_message": None,
                 "latest_assistant_message": None,
+                "active_topic": None,
                 "message_ids": [],
                 "named_entities": [],
             }
@@ -1131,9 +1132,11 @@ class CeaserOrchestrator:
         for item in recent_messages:
             metadata = item.extra_metadata
             research = metadata.get("research") if isinstance(metadata, dict) else None
-            if item.role == "assistant" and latest_assistant_message is None:
+            # This list is chronological.  Keep overwriting so the context holds
+            # the actual most recent turn rather than the oldest retained turn.
+            if item.role == "assistant":
                 latest_assistant_message = {"id": item.id, "content": item.content[:2200]}
-            if item.role == "user" and latest_user_message is None:
+            if item.role == "user":
                 latest_user_message = {"id": item.id, "content": item.content[:1200]}
             compact_messages.append(
                 {
@@ -1144,6 +1147,7 @@ class CeaserOrchestrator:
                 }
             )
         named_entities = self._extract_entities(compact_messages)
+        active_topic = self._active_topic_from_messages(compact_messages)
         return {
             "messages": compact_messages,
             "previous_research": previous_research,
@@ -1153,6 +1157,7 @@ class CeaserOrchestrator:
             "history_token_count": max(1, round(sum(len(item.get("content", "")) for item in compact_messages) / 4)),
             "latest_user_message": latest_user_message,
             "latest_assistant_message": latest_assistant_message,
+            "active_topic": active_topic,
             "message_ids": [item.id for item in recent_messages],
             "named_entities": named_entities,
         }
@@ -1284,10 +1289,22 @@ class CeaserOrchestrator:
         previous_assistant = (follow_up_trace.get("previous_assistant_excerpt") or "").strip()
         summary = (follow_up_trace.get("conversation_summary") or "").strip()
         entities = ", ".join(follow_up_trace.get("resolved_entities") or [])
+        intent = follow_up_trace.get("follow_up_intent") or "expand"
+        instruction_by_intent = {
+            "continue": "Continue from the last useful point. Do not repeat the answer already given.",
+            "simplify": "Explain the active topic in simpler language while keeping the topic unchanged.",
+            "summarize": "Give a concise summary of the active topic and the prior answer.",
+            "examples": "Give concrete examples that clarify the active topic.",
+            "history": "Answer the history aspect of the active topic.",
+            "why_how": "Answer the user's why/how question about the active topic.",
+            "expand": "Expand the prior answer with new, useful detail; do not define the wording of the follow-up in isolation.",
+        }
         return "\n\n".join(
             [
-                "System instruction: Continue the active conversation naturally. Resolve vague references such as this, it, them, him, her, the previous answer, explain briefly, continue, and give examples from the conversation history. Do not describe CEASER unless explicitly asked.",
+                "System instruction: Resolve the current request using the active conversation topic. Do not treat vague words such as 'depth', 'detail', 'more', 'continue', 'it', or 'this' as independent topics. Do not describe CEASER unless explicitly asked.",
                 f"Active topic: {topic}",
+                f"Follow-up intent: {intent}",
+                instruction_by_intent.get(intent, instruction_by_intent["expand"]),
                 f"Resolved entities: {entities or topic}",
                 f"Previous user message: {previous_user or 'None'}",
                 f"Previous assistant answer: {previous_assistant or 'None'}",
@@ -1297,19 +1314,32 @@ class CeaserOrchestrator:
         )
 
     def _follow_up_trace(self, *, message: str, conversation_context: dict, parent_message_id: str | None) -> dict:
-        normalized = message.lower().strip()
         previous_research = conversation_context.get("previous_research") or {}
         latest_assistant_message = conversation_context.get("latest_assistant_message") or {}
         latest_user_message = conversation_context.get("latest_user_message") or {}
         latest_assistant_content = latest_assistant_message.get("content", "") if isinstance(latest_assistant_message, dict) else ""
         latest_user_content = latest_user_message.get("content", "") if isinstance(latest_user_message, dict) else ""
-        active_topic = (
-            previous_research.get("query")
+        prior_topic = (
+            conversation_context.get("active_topic")
+            or previous_research.get("query")
             or conversation_context.get("inferred_topic")
             or self._topic_from_previous_assistant(latest_assistant_content)
             or self._topic_from_previous_user(latest_user_content)
         )
-        follow_up_detected = self._is_conversation_follow_up(normalized)
+        resolution = self._resolve_conversation_turn(message, prior_topic)
+        active_topic = resolution.get("active_topic") or prior_topic
+        # A clearly introduced subject becomes the new active topic.  A vague
+        # request stays attached to the existing one.
+        if resolution.get("new_topic"):
+            active_topic = resolution.get("explicit_topic") or active_topic
+        if not active_topic:
+            active_topic = (
+            previous_research.get("query")
+            or conversation_context.get("inferred_topic")
+            or self._topic_from_previous_assistant(latest_assistant_content)
+            or self._topic_from_previous_user(latest_user_content)
+            )
+        follow_up_detected = bool(resolution.get("follow_up_detected") and active_topic)
         resolved_entities = list(conversation_context.get("named_entities") or [])
         if active_topic and active_topic not in resolved_entities:
             resolved_entities.insert(0, active_topic)
@@ -1324,6 +1354,7 @@ class CeaserOrchestrator:
             context_source.append("parent_message_id")
         return {
             "follow_up_detected": follow_up_detected,
+            "follow_up_intent": resolution.get("intent"),
             "active_topic": active_topic,
             "resolved_entities": resolved_entities[:6],
             "context_source": context_source,
@@ -1333,13 +1364,89 @@ class CeaserOrchestrator:
         }
 
     def _is_conversation_follow_up(self, message: str) -> bool:
-        return bool(
-            re.search(
-                r"\b(summarize this|summarize the|explain briefly|explain in brief|brief me|brief me more|explain (me )?(in )?(detail|depth)|make it simpler|give examples|compare them|what about (him|her|it|them)|continue|why|how|turn this into|show a chart|show a table|show a list|the previous answer|this|it|them|him|her)\b",
-                message,
-            )
-            or re.match(r"^(and|also|then|so|briefly|more|continue)\b", message)
+        return bool(self._resolve_conversation_turn(message, None).get("follow_up_detected"))
+
+    def _resolve_conversation_turn(self, message: str, prior_topic: str | None) -> dict:
+        """Classify a turn before generating an answer.
+
+        Short requests are deliberately resolved against the active topic.  This
+        prevents phrases such as "explain in depth" from becoming a request to
+        explain the word "depth".
+        """
+        normalized = re.sub(r"\s+", " ", message.lower()).strip(" .?!")
+        explicit_topic = self._extract_explicit_topic(message)
+        follow_up_patterns = {
+            "continue": r"^(continue|go on|keep going|carry on|what else)(?:\s+please)?$|\bcontinue (?:from|with)\b",
+            "simplify": r"\b(explain|say|put).{0,20}\b(simple|simpler|plain)\b|\bin simple words\b|\bbriefly\b|\bshort version\b",
+            "summarize": r"\b(summarize|summary|recap|tl;dr)\b",
+            "examples": r"\b(example|examples|illustrate|use case|use cases)\b",
+            "history": r"\b(history|historical|origin|origins|background)\b",
+            "why_how": r"^(why|how)(\s|$)|\b(why|how) (does|do|did|is|are|can|would)\b",
+            "expand": r"\b(?:explain(?: me)?|tell me|give me|go) (?:more|further|deeper|depth|detail|in depth|in detail|in detail please)\b|\b(elaborate|more details|more information|everything about)\b|^(more|details|depth|detail|in depth|in detail)$",
+        }
+        intent = next((name for name, pattern in follow_up_patterns.items() if re.search(pattern, normalized)), None)
+        pronoun_reference = bool(re.search(r"\b(this|that|it|them|they|him|her|the previous answer|above)\b", normalized))
+        connector = bool(re.match(r"^(and|also|then|so)\b", normalized))
+        is_short = len(normalized.split()) <= 7
+        vague_follow_up = bool(intent or pronoun_reference or connector)
+
+        # An explicit meaningful subject only replaces the active topic when it
+        # is not simply a follow-up instruction such as "explain in detail".
+        if explicit_topic and not (vague_follow_up and is_short):
+            return {
+                "follow_up_detected": False,
+                "new_topic": True,
+                "explicit_topic": explicit_topic,
+                "active_topic": explicit_topic,
+                "intent": "new_topic",
+            }
+        return {
+            "follow_up_detected": vague_follow_up,
+            "new_topic": False,
+            "explicit_topic": None,
+            "active_topic": prior_topic,
+            "intent": intent or "expand",
+        }
+
+    def _extract_explicit_topic(self, message: str) -> str | None:
+        value = re.sub(r"\s+", " ", message).strip(" .?!")
+        if not value or self._is_generic_follow_up_phrase(value):
+            return None
+        value = re.sub(
+            r"^(?:now\s+)?(?:can you\s+)?(?:please\s+)?(?:tell|explain|describe|teach|show|give|help me understand|what is|what are)\s+(?:me\s+)?(?:about\s+)?",
+            "",
+            value,
+            flags=re.I,
         )
+        value = re.sub(r"^(?:about\s+)", "", value, flags=re.I)
+        value = re.sub(r"\b(?:please|in detail|in depth|briefly|more|further)\b", " ", value, flags=re.I)
+        value = re.sub(r"\s+", " ", value).strip(" .?!")
+        if not value or self._is_generic_follow_up_phrase(value):
+            return None
+        return value[:160]
+
+    def _is_generic_follow_up_phrase(self, value: str) -> bool:
+        normalized = re.sub(r"\s+", " ", value.lower()).strip(" .?!")
+        return bool(re.fullmatch(
+            r"(?:explain(?: me)?(?: in)?|tell me|give me|go)?\s*(?:more|more details|more information|depth|detail|in depth|in detail|briefly|continue|go deeper|elaborate|examples?|why|how|what else|everything|this|that|it|them|they|the previous answer)",
+            normalized,
+        ))
+
+    def _active_topic_from_messages(self, messages: list[dict]) -> str | None:
+        """Return the latest user-introduced topic, skipping vague follow-ups."""
+        for item in reversed(messages):
+            if item.get("role") != "user":
+                continue
+            content = item.get("content", "")
+            topic = self._extract_explicit_topic(content)
+            if topic:
+                return topic
+        for item in reversed(messages):
+            if item.get("role") == "assistant":
+                topic = self._topic_from_previous_assistant(item.get("content", ""))
+                if topic:
+                    return topic
+        return None
 
     def _summarize_messages(self, messages: list) -> str | None:
         if not messages:
@@ -1371,9 +1478,7 @@ class CeaserOrchestrator:
         return None
 
     def _topic_from_previous_user(self, content: str) -> str | None:
-        cleaned = re.sub(r"\b(explain|tell|about|me|compare|summarize|brief|please)\b", " ", content, flags=re.I)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?!")
-        return cleaned[:120] if cleaned else None
+        return self._extract_explicit_topic(content)
 
     def _infer_topic(self, messages: list[dict]) -> str | None:
         text = " ".join(item.get("content", "") for item in messages).lower()
