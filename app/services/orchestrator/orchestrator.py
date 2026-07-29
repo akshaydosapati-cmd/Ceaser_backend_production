@@ -820,7 +820,9 @@ class CeaserOrchestrator:
 
     def _maybe_calendar_response(self, user_id: str, message: str) -> str | None:
         normalized = message.lower()
-        if not re.search(r"\b(calendar|calender|event|events|schedule|meeting|meetings)\b", normalized):
+        # Planning an itinerary or suggesting meetings is not a request to
+        # access a private calendar.  Calendar access is opt-in only.
+        if not self._is_explicit_google_calendar_request(normalized):
             return None
 
         target_date = self._calendar_target_date(message)
@@ -897,6 +899,15 @@ class CeaserOrchestrator:
             detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
             lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
         return "\n".join(lines)
+
+    def _is_explicit_google_calendar_request(self, message: str) -> bool:
+        calendar_reference = bool(re.search(r"\b(?:google calendar|my calendar|calendar|calender)\b", message))
+        calendar_action = bool(re.search(r"\b(?:check|show|list|read|find|add|create|schedule|sync|fit)\b", message))
+        personal_event_request = bool(re.search(
+            r"\b(?:what|which|show|list|check)\b.{0,40}\b(?:my events|my meetings|my availability|my free time)\b|\b(?:am i|are we)\s+(?:free|available)\b|\bmy availability\b",
+            message,
+        ))
+        return (calendar_reference and calendar_action) or personal_event_request
 
     def _is_explicit_google_drive_request(self, message: str) -> bool:
         drive_reference = bool(re.search(r"\b(?:google drive|my drive|drive (?:file|files|document|documents|folder|folders)|my files)\b", message))

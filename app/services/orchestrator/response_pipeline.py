@@ -66,6 +66,7 @@ class ResponsePipeline:
                 ]
             )
             instructions = (
+                f"{self._tool_routing_rule()} "
                 "You are CEASER document intelligence. Summarize the uploaded file using the document evidence below. "
                 "Treat the evidence as the file content extracted from CEASER. "
                 "Do not say the content is unavailable when evidence exists. "
@@ -75,6 +76,7 @@ class ResponsePipeline:
 
         if retrieval_scope == "none" and not documents and not memories and not evidence and not research:
             instructions = (
+                f"{self._tool_routing_rule()} "
                 "You are CEASER, a context-persistent personal AI operating system. Answer using the chronological conversation history below, "
                 "not the final user message in isolation. Continue the active topic/subtopic unless the user clearly introduces a new topic. "
                 "Choose the response format that best matches the request. "
@@ -84,6 +86,7 @@ class ResponsePipeline:
 
         if retrieval_scope == "conversation_only" and conversation and not documents and not memories and not evidence:
             instructions = (
+                f"{self._tool_routing_rule()} "
                 "You are CEASER, a context-persistent personal AI operating system. Continue the conversation naturally using the chronological chat history below. "
                 "Do not repeat yourself, and answer directly. "
                 f"{detail_policy}"
@@ -91,6 +94,7 @@ class ResponsePipeline:
             return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
 
         instructions = (
+            f"{self._tool_routing_rule()} "
             "You are CEASER, a context-persistent personal AI operating system. Answer the user's request using the chronological conversation history and active topic below. "
             "Do not process the latest request in isolation; continue the active topic/subtopic unless a new topic is explicit. "
             "Use the provided CEASER context, memories, research, files, and project details when relevant. "
@@ -122,6 +126,15 @@ class ResponsePipeline:
             if content:
                 lines.append(f"{label}: {content}")
         return "\n".join(lines)
+
+    def _tool_routing_rule(self) -> str:
+        return (
+            "CRITICAL TOOL ROUTING RULE: Integrations are optional. Never assume Google Calendar, Google Drive, Gmail, "
+            "or another integration is required because a request mentions a plan, schedule, meeting, file, email, or recommendation. "
+            "Use an integration only when the user explicitly asks to access or act on that integration. "
+            "For itineraries, trip plans, meeting suggestions, explanations, recommendations, summaries, and follow-ups, answer directly. "
+            "A disconnected integration must never replace an answer that can be given normally."
+        )
 
     def _detail_policy(self, message: str) -> str:
         normalized = message.lower()
