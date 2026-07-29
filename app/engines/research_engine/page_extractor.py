@@ -32,6 +32,7 @@ class PageExtractor:
             with httpx.Client(
                 follow_redirects=True,
                 timeout=self.timeout_seconds,
+                trust_env=False,
                 headers={"User-Agent": "CEASER Research/1.0"},
             ) as client:
                 response = client.get(url)

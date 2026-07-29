@@ -381,6 +381,12 @@ class CeaserOrchestrator:
         else:
             selected_agent_names = self._default_stream_agents(effective_message)
 
+        if not research_result and self._should_run_research(effective_message, selected_agent_names):
+            research_result = self._maybe_research(
+                query=self._research_query(message, conversation_context),
+                selected_agent_names=selected_agent_names,
+            )
+
         retrieval_started = perf_counter()
         knowledge_context = self._knowledge_context(
             user_id=user_id,
@@ -1206,8 +1212,7 @@ class CeaserOrchestrator:
         }
 
     def _maybe_research(self, query: str, selected_agent_names: list[str]):
-        if "Nova" not in selected_agent_names:
-            return None
+        _ = selected_agent_names
         return self.research_engine.research(query)
 
     def _should_run_heavy_pipeline(self, message: str) -> bool:
@@ -1228,9 +1233,14 @@ class CeaserOrchestrator:
         normalized = message.lower()
         explicit_research = any(
             term in normalized
-            for term in ["research", "latest", "news", "sources", "citations", "web", "internet", "competitor", "market"]
+            for term in [
+                "research", "latest", "news", "sources", "citations", "web", "internet", "online", "competitor", "market",
+                "current", "currently", "today", "recent", "as of", "this week", "this month", "this year", "live update",
+            ]
         )
-        return explicit_research and "Nova" in selected_agents
+        _ = selected_agents
+        asks_for_recent_year = bool(re.search(r"\b20(?:2[5-9]|[3-9]\d)\b", normalized))
+        return explicit_research or asks_for_recent_year
 
     def _default_stream_agents(self, message: str) -> list[str]:
         normalized = message.lower()

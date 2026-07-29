@@ -79,7 +79,7 @@ class NewsApiProvider:
 
         url = f"{(settings.news_api_base_url or self.default_base_url).rstrip('/')}/{path.lstrip('/')}"
         try:
-            with httpx.Client(timeout=20) as client:
+            with httpx.Client(timeout=20, trust_env=False) as client:
                 response = client.get(url, params={**params, "apiKey": settings.news_api_key})
                 response.raise_for_status()
                 payload = response.json()

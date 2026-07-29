@@ -85,7 +85,7 @@ class RapidApiGoogleNewsProvider:
             request_params.setdefault("lr", settings.rapidapi_news_language)
 
         try:
-            with httpx.Client(timeout=20) as client:
+            with httpx.Client(timeout=20, trust_env=False) as client:
                 response = client.get(
                     url,
                     headers={

@@ -13,7 +13,12 @@ class NewsService:
         self.provider = provider or self._provider()
 
     def _provider(self) -> NewsApiProvider | RapidApiGoogleNewsProvider:
-        if (settings.news_provider or "").lower() in {"newsapi", "newsapi.org"} or settings.news_api_key:
+        configured = (settings.news_provider or "").lower().strip()
+        if configured in {"rapidapi", "rapidapi_google_news", "google-news13"}:
+            return RapidApiGoogleNewsProvider()
+        if configured in {"newsapi", "newsapi.org"}:
+            return NewsApiProvider()
+        if settings.news_api_key:
             return NewsApiProvider()
         return RapidApiGoogleNewsProvider()
 

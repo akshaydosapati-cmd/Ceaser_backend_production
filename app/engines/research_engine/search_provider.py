@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import httpx
 
 from app.core.cache import ttl_cache
+from app.services.news import NewsService
 
 
 class SearchProvider(ABC):
@@ -24,7 +25,7 @@ class DuckDuckGoSearchProvider(SearchProvider):
             return cached
         url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
         try:
-            with httpx.Client(timeout=12, follow_redirects=True) as client:
+            with httpx.Client(timeout=12, follow_redirects=True, trust_env=False) as client:
                 response = client.get(url)
                 response.raise_for_status()
                 data = response.json()
@@ -54,8 +55,30 @@ class DuckDuckGoSearchProvider(SearchProvider):
             if len(sources) >= limit:
                 break
         result = sources[:limit]
+        if not result:
+            result = self._search_html(query, limit)
+        if not result:
+            result = self._search_news(query, limit)
         ttl_cache.set(cache_key, result, ttl_seconds=300)
         return result
+
+    @staticmethod
+    def _search_news(query: str, limit: int) -> list[dict]:
+        """Use the configured news provider when general web search is unavailable."""
+        try:
+            brief = NewsService().for_automation(name=query, prompt=query)
+        except Exception:  # noqa: BLE001
+            return []
+        return [
+            {
+                "title": article.title,
+                "url": article.url or "",
+                "source": article.source or brief.provider,
+                "snippet": article.summary or "",
+            }
+            for article in brief.articles[:limit]
+            if article.title and article.url
+        ]
 
     def _flatten_related(self, items: list[dict]) -> list[dict]:
         flattened = []
@@ -67,11 +90,9 @@ class DuckDuckGoSearchProvider(SearchProvider):
         return flattened
 
     def _search_html(self, query: str, limit: int) -> list[dict]:
-        # Kept for explicit future debugging only. Normal CEASER research uses approved/API-style retrieval above.
-        return []
         url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
         try:
-            with httpx.Client(timeout=12, follow_redirects=True, headers={"User-Agent": "CEASER Research"}) as client:
+            with httpx.Client(timeout=12, follow_redirects=True, trust_env=False, headers={"User-Agent": "CEASER Research"}) as client:
                 response = client.get(url)
                 response.raise_for_status()
                 body = response.text

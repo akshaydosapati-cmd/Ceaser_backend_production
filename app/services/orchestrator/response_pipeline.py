@@ -55,6 +55,11 @@ class ResponsePipeline:
         research = context.get("research_result")
         merged_contributions = context.get("merged_contributions", {}) or {}
         evidence = knowledge_context.get("evidence", "")
+        freshness_rule = (
+            "When live research is provided, treat its sources as the authority for present-day facts. "
+            "Do not replace them with model memory; if no reliable live source exists, say so briefly rather than guessing. "
+            if research else ""
+        )
 
         if intent == "file_summary":
             context_text = "\n\n".join(
@@ -80,6 +85,7 @@ class ResponsePipeline:
                 "You are CEASER, a context-persistent personal AI operating system. Answer using the chronological conversation history below, "
                 "not the final user message in isolation. Continue the active topic/subtopic unless the user clearly introduces a new topic. "
                 "When the user names a different subject, answer that subject directly as the first part of the answer; never scold them for changing topics, discuss conversation management, or ask them to get back on track. "
+                f"{freshness_rule}"
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
@@ -90,6 +96,7 @@ class ResponsePipeline:
                 f"{self._tool_routing_rule()} "
                 "You are CEASER, a context-persistent personal AI operating system. Continue the conversation naturally using the chronological chat history below. "
                 "If the user names a different subject, switch to it and answer directly. Do not repeat yourself, discuss conversation management, scold the user for changing topics, or ask them to get back on track. "
+                f"{freshness_rule}"
                 f"{detail_policy}"
             )
             return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
@@ -103,6 +110,7 @@ class ResponsePipeline:
             "Choose the response format that matches the task. Do not force every answer into Executive Summary, Key Trends, and Recommendations. "
             "Do not mention internal orchestration, selected agents, or framework names unless the user asks. "
             "If document knowledge evidence is present, summarize or answer from that evidence directly and do not claim the document content is unavailable. "
+            f"{freshness_rule}"
             f"{detail_policy}"
         )
         context_text = "\n\n".join(
