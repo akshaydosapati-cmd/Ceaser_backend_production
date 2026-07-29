@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database.session import get_db
@@ -53,3 +53,35 @@ def cancel_workflow(workflow_id: str, user: Annotated[User, Depends(get_current_
     if not run:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return manager.cancel(run)
+
+
+@router.post("/{workflow_id}/status/{action}", response_model=WorkflowRunRead)
+def transition_workflow(workflow_id: str, action: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    manager = WorkflowManager(db)
+    run = manager.get(workflow_id=workflow_id, user_id=user.id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    if action not in {"approved", "archived"}:
+        raise HTTPException(status_code=400, detail="Unsupported workflow action")
+    return manager.transition(run, action)
+
+
+@router.post("/{workflow_id}/regenerate", response_model=WorkflowStartResponse)
+def regenerate_workflow(workflow_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    run = WorkflowManager(db).get(workflow_id=workflow_id, user_id=user.id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    metadata = run.metadata_json or {}
+    message = metadata.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(status_code=400, detail="This older workflow cannot be regenerated because its original brief is unavailable.")
+    return WorkflowOrchestrator(db).run(user_id=user.id, message=message, conversation_id=metadata.get("conversation_id"), file_ids=metadata.get("file_ids") or []).model_dump()
+
+
+@router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_workflow(workflow_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    manager = WorkflowManager(db)
+    run = manager.get(workflow_id=workflow_id, user_id=user.id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    manager.delete(run)

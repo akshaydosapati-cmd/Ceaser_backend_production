@@ -26,7 +26,7 @@ class WorkflowOrchestrator:
             agent["name"]: self.context.integrations.for_agent(user_id=user_id, agent_name=agent["name"])
             for agent in selected_agents
         }
-        run = self.manager.create(user_id=user_id, workflow_type=plan.workflow_type, agents=plan.agents, metadata={"plan": plan.model_dump(), "conversation_id": conversation_id})
+        run = self.manager.create(user_id=user_id, workflow_type=plan.workflow_type, agents=plan.agents, metadata={"plan": plan.model_dump(), "conversation_id": conversation_id, "message": message, "file_ids": file_ids or []})
         executed = self.executor.execute(run=run, workflow_name=plan.name, base_context=context_bundle["context"])
         steps = [
             {

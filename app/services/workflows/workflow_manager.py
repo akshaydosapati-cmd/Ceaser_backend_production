@@ -40,3 +40,20 @@ class WorkflowManager:
         self.db.commit()
         self.db.refresh(run)
         return run
+
+    def transition(self, run: WorkflowRun, action: str) -> WorkflowRun:
+        if action == "approved":
+            run.status = "approved"
+        elif action == "archived":
+            run.status = "archived"
+        else:
+            raise ValueError("Unsupported workflow action")
+        AuditService(self.db).record(user_id=run.user_id, action=f"workflow_{action}", resource_type="workflow", resource_id=run.id, commit=False)
+        self.db.commit()
+        self.db.refresh(run)
+        return run
+
+    def delete(self, run: WorkflowRun) -> None:
+        AuditService(self.db).record(user_id=run.user_id, action="workflow_deleted", resource_type="workflow", resource_id=run.id, commit=False)
+        self.db.delete(run)
+        self.db.commit()
