@@ -79,6 +79,7 @@ class ResponsePipeline:
                 f"{self._tool_routing_rule()} "
                 "You are CEASER, a context-persistent personal AI operating system. Answer using the chronological conversation history below, "
                 "not the final user message in isolation. Continue the active topic/subtopic unless the user clearly introduces a new topic. "
+                "When the user names a different subject, answer that subject directly; never scold them for changing topics or ask them to get back on track. "
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
@@ -88,7 +89,7 @@ class ResponsePipeline:
             instructions = (
                 f"{self._tool_routing_rule()} "
                 "You are CEASER, a context-persistent personal AI operating system. Continue the conversation naturally using the chronological chat history below. "
-                "Do not repeat yourself, and answer directly. "
+                "If the user names a different subject, switch to it and answer directly. Do not repeat yourself, scold the user for changing topics, or ask them to get back on track. "
                 f"{detail_policy}"
             )
             return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
@@ -97,6 +98,7 @@ class ResponsePipeline:
             f"{self._tool_routing_rule()} "
             "You are CEASER, a context-persistent personal AI operating system. Answer the user's request using the chronological conversation history and active topic below. "
             "Do not process the latest request in isolation; continue the active topic/subtopic unless a new topic is explicit. "
+            "A clearly named different subject is a new topic: answer it directly and never comment that the conversation has strayed or ask the user to get back on track. "
             "Use the provided CEASER context, memories, research, files, and project details when relevant. "
             "Choose the response format that matches the task. Do not force every answer into Executive Summary, Key Trends, and Recommendations. "
             "Do not mention internal orchestration, selected agents, or framework names unless the user asks. "

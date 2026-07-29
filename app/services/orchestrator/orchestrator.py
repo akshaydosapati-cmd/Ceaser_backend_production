@@ -1444,9 +1444,12 @@ class CeaserOrchestrator:
                 "intent": "subtopic",
             }
 
-        # An explicit meaningful subject only replaces the active topic when it
-        # is not simply a follow-up instruction such as "explain in detail".
-        if explicit_topic and not (vague_follow_up and is_short):
+        # A named subject is a new topic even if the wording also contains a
+        # follow-up phrase (for example, "tell me more about Bahubali").  The
+        # generic follow-up filter above has already removed phrases such as
+        # "explain in depth" and "tell me more", which should stay attached
+        # to the active topic.
+        if explicit_topic:
             return {
                 "follow_up_detected": False,
                 "new_topic": True,
@@ -1497,7 +1500,7 @@ class CeaserOrchestrator:
         if not value or self._is_generic_follow_up_phrase(value):
             return None
         value = re.sub(
-            r"^(?:now\s+)?(?:can you\s+)?(?:please\s+)?(?:tell|explain|describe|teach|show|give|help me understand|what is|what are)\s+(?:me\s+)?(?:about\s+)?",
+            r"^(?:now\s+)?(?:can you\s+)?(?:please\s+)?(?:tell|explain|describe|teach|show|give|help me understand|what is|what are)\s+(?:me\s+)?(?:more\s+)?(?:about\s+)?",
             "",
             value,
             flags=re.I,
