@@ -18,7 +18,11 @@ class SupabaseAuth:
         return bool(self.supabase_url and self.anon_key)
 
     async def signup(self, email: str, password: str) -> dict:
-        return await self._post("/auth/v1/signup", {"email": email, "password": password})
+        payload: dict = {"email": email, "password": password}
+        redirect_to = self._email_redirect_to()
+        if redirect_to:
+            payload["options"] = {"emailRedirectTo": redirect_to}
+        return await self._post("/auth/v1/signup", payload)
 
     async def login(self, email: str, password: str) -> dict:
         return await self._post("/auth/v1/token?grant_type=password", {"email": email, "password": password})
@@ -28,15 +32,26 @@ class SupabaseAuth:
 
     async def recover_password(self, email: str, redirect_to: str | None = None) -> dict:
         path = "/auth/v1/recover"
-        if redirect_to:
-            path = f"{path}?{urlencode({'redirect_to': redirect_to})}"
+        redirect_target = redirect_to or self._email_redirect_to()
+        if redirect_target:
+            path = f"{path}?{urlencode({'redirect_to': redirect_target})}"
         return await self._post(path, {"email": email})
 
     async def update_password(self, access_token: str, password: str) -> dict:
         return await self._put("/auth/v1/user", {"password": password}, access_token=access_token)
 
     async def resend_verification(self, email: str, verification_type: str = "signup") -> dict:
-        return await self._post("/auth/v1/resend", {"type": verification_type, "email": email})
+        payload: dict = {"type": verification_type, "email": email}
+        redirect_to = self._email_redirect_to()
+        if redirect_to:
+            payload["options"] = {"emailRedirectTo": redirect_to}
+        return await self._post("/auth/v1/resend", payload)
+
+    def _email_redirect_to(self) -> str | None:
+        base = (settings.frontend_app_url or "").strip()
+        if not base:
+            return None
+        return f"{base.rstrip('/')}/auth/callback/"
 
     async def enroll_totp(self, access_token: str, friendly_name: str) -> dict:
         return await self._post(
