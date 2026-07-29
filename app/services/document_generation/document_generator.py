@@ -20,13 +20,13 @@ class DocumentGenerator:
         "xlsx": XLSXGenerator(),
     }
 
-    def generate(self, *, prompt: str, kind: str, template_id: str | None = None, agent_id: str | None = None) -> GeneratedDocumentResult:
+    def generate(self, *, prompt: str, kind: str, template_id: str | None = None, agent_id: str | None = None, source_content: str | None = None) -> GeneratedDocumentResult:
         templates = TemplateManager()
         template = templates.get(template_id) if template_id else templates.route(prompt, kind)
         selected_agent = agent_id or template.agent_id
-        title = self._title(prompt, template.name)
-        content = self._content(prompt=prompt, title=title, template_name=template.name, sections=template.sections, agent_id=selected_agent)
-        sections = self._split_sections(content, template.sections)
+        title = self._source_title(source_content) if source_content else self._title(prompt, template.name)
+        content = self._clean_content(source_content) if source_content else self._content(prompt=prompt, title=title, template_name=template.name, sections=template.sections, agent_id=selected_agent)
+        sections = self._sections_from_source(content) if source_content else self._split_sections(content, template.sections)
         generator = self.generators[kind]
         bytes_data = generator.generate(title, sections)
         filename = f"{self._safe_name(title)}.{kind}"
@@ -95,6 +95,47 @@ class DocumentGenerator:
         cleaned = cleaned.replace("```", "")
         cleaned = re.sub(r"^\s*#+\s*", "", cleaned, flags=re.M)
         return cleaned.strip()
+
+    @staticmethod
+    def _source_title(source_content: str | None) -> str:
+        if not source_content:
+            return "CEASER Document"
+        for line in source_content.splitlines():
+            candidate = re.sub(r"^\s*#+\s*", "", line).strip(" -:.")
+            if candidate and len(candidate) <= 90 and not candidate.startswith("-"):
+                return candidate
+        return "CEASER Document"
+
+    @staticmethod
+    def _sections_from_source(content: str) -> list[tuple[str, str]]:
+        """Format an existing CEASER answer without sending it through an LLM again."""
+        sections: list[tuple[str, str]] = []
+        heading = "Document Content"
+        lines: list[str] = []
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            words = re.findall(r"[A-Za-z][A-Za-z'-]*", line)
+            title_like = bool(words) and any(word[0].isupper() for word in words) and sum(
+                word[0].isupper() or word.lower() in {"and", "or", "of", "the", "to", "for", "in", "on", "with"}
+                for word in words
+            ) >= max(1, len(words) - 1)
+            is_heading = (
+                bool(line)
+                and len(line) <= 90
+                and not re.match(r"^(?:[-*]|\d+[.)])\s+", line)
+                and not line.endswith((".", "?", "!", ":"))
+                and (title_like or line.isupper())
+            )
+            if is_heading:
+                if lines:
+                    sections.append((heading, "\n".join(lines).strip()))
+                    lines = []
+                heading = line
+            elif line:
+                lines.append(line)
+        if lines:
+            sections.append((heading, "\n".join(lines).strip()))
+        return sections or [("Document Content", content or "No content was available.")]
 
     @staticmethod
     def _clean_body(body: str) -> str:

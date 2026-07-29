@@ -19,6 +19,7 @@ class GenerateDocumentRequest(BaseModel):
     kind: str = Field(pattern="^(docx|pdf|pptx|xlsx)$")
     template_id: str | None = None
     agent_id: str | None = None
+    source_content: str | None = Field(default=None, max_length=50000)
 
 
 class GeneratedDocumentRead(BaseModel):

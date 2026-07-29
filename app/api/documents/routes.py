@@ -31,7 +31,7 @@ def list_templates(kind: str | None = None, agent_id: str | None = None):
 @router.post("", response_model=GenerateDocumentResponse, status_code=status.HTTP_201_CREATED)
 def generate_document(payload: GenerateDocumentRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
     try:
-        result = DocumentGenerator().generate(prompt=payload.prompt, kind=payload.kind, template_id=payload.template_id, agent_id=payload.agent_id)
+        result = DocumentGenerator().generate(prompt=payload.prompt, kind=payload.kind, template_id=payload.template_id, agent_id=payload.agent_id, source_content=payload.source_content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -64,7 +64,10 @@ def generate_document(payload: GenerateDocumentRequest, user: Annotated[User, De
             "export_format": result.kind,
         },
     )
-    if settings.knowledge_auto_embed:
+    # A document created from the already-generated chat answer is ready to
+    # save immediately. Embedding it is optional background enrichment and can
+    # add a slow external model request, so defer it for this fast path.
+    if settings.knowledge_auto_embed and not payload.source_content:
         try:
             KnowledgeEmbeddingService(db).embed_source_sync(user_id=user.id, source_id=source.id)
         except Exception:

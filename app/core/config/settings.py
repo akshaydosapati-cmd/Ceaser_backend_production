@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     dev_auth_bypass: bool = Field(default=False, alias="DEV_AUTH_BYPASS")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
-    llm_provider_order_raw: str = Field(default="groq,huggingface,gemini,openai", alias="LLM_PROVIDER_ORDER")
+    llm_provider_order_raw: str = Field(default="groq,gemini,openai", alias="LLM_PROVIDER_ORDER")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     huggingface_api_key: str | None = Field(
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     llm_connect_timeout_seconds: float = Field(default=10.0, alias="LLM_CONNECT_TIMEOUT_SECONDS")
     llm_first_token_timeout_seconds: float = Field(default=8.0, alias="LLM_FIRST_TOKEN_TIMEOUT_SECONDS")
     llm_total_timeout_seconds: float = Field(default=45.0, alias="LLM_TOTAL_TIMEOUT_SECONDS")
-    llm_max_fallbacks: int = Field(default=1, alias="LLM_MAX_FALLBACKS")
+    llm_max_fallbacks: int = Field(default=2, alias="LLM_MAX_FALLBACKS")
     provider_circuit_breaker_seconds: int = Field(default=300, alias="PROVIDER_CIRCUIT_BREAKER_SECONDS")
     openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
     openai_json_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_JSON_MODEL")

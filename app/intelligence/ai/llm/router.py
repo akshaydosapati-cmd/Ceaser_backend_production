@@ -8,7 +8,6 @@ from app.core.config.settings import settings
 from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.intelligence.ai.llm.gemini_provider import GeminiFallbackProvider
 from app.intelligence.ai.llm.groq_provider import GroqProvider
-from app.intelligence.ai.llm.huggingface_provider import HuggingFaceProvider
 from app.intelligence.ai.llm.openai_provider import OpenAIProvider
 
 
@@ -42,10 +41,16 @@ class ProviderHealth:
 
 class AdaptiveLLMRouter:
     def __init__(self) -> None:
-        self._provider_names = [name.strip().lower() for name in settings.llm_provider_order_raw.split(",") if name.strip()]
+        # Hugging Face is intentionally excluded from production chat routing.
+        # It may remain configured for other local experiments, but it must
+        # never answer a CEASER chat or document-generation request.
+        self._provider_names = [
+            name.strip().lower()
+            for name in settings.llm_provider_order_raw.split(",")
+            if name.strip() and name.strip().lower() != "huggingface"
+        ]
         self._factories = {
             "groq": GroqProvider,
-            "huggingface": HuggingFaceProvider,
             "gemini": GeminiFallbackProvider,
             "openai": OpenAIProvider,
         }
@@ -113,8 +118,6 @@ class AdaptiveLLMRouter:
         if not factory:
             return None
         if provider_name == "groq" and not settings.groq_api_key:
-            return None
-        if provider_name == "huggingface" and not settings.huggingface_api_key:
             return None
         if provider_name == "gemini" and not settings.gemini_api_key:
             return None
