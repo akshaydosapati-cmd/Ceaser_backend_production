@@ -43,7 +43,12 @@ class WorkflowExecutor:
             run.status = "completed"
             run.completed_at = utc_now()
             run.result_summary = merged["summary"]
-            run.metadata_json = {**(run.metadata_json or {}), "contributions": contributions, "next_actions": merged["next_actions"]}
+            run.metadata_json = {
+                **(run.metadata_json or {}),
+                "contributions": contributions,
+                "next_actions": merged["next_actions"],
+                "generated_response": merged["response"],
+            }
             AuditService(self.db).record(user_id=run.user_id, action="workflow_completed", resource_type="workflow", resource_id=run.id, metadata={"agent_count": len(contributions)}, commit=False)
             self.db.commit()
             self.db.refresh(run)
