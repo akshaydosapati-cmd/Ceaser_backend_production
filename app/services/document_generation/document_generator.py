@@ -42,6 +42,7 @@ class DocumentGenerator:
         )
 
     def _content(self, *, prompt: str, title: str, template_name: str, sections: list[str], agent_id: str) -> str:
+        is_workflow = template_name == "Workflow Execution Plan"
         instruction = (
             f"Create a professional {template_name} titled '{title}'.\n"
             f"Owner agent: {agent_id}.\n"
@@ -51,6 +52,15 @@ class DocumentGenerator:
             "Each section must start with its section heading on its own line, followed by practical finished content.\n"
             "Use concise paragraphs and bullet points where useful. Make it ready for a real user to download."
         )
+        if is_workflow:
+            instruction += (
+                "\nThis is an execution document, not a research report. Do not use Executive Summary, Methodology, "
+                "Key Findings, Market Signals, Recommendations, or Sources. "
+                "For Execution Phases, use numbered phases with a name, purpose, owner, and deadline. "
+                "For Task Plan, group concrete checklist tasks beneath each phase and give every task an owner and due date. "
+                "For Risks and Mitigations, pair each risk with a specific mitigation. "
+                "Do not invent claims, research, competitors, market data, or citations that the user did not provide."
+            )
         try:
             response = generate_text_sync(
                 instructions=(
@@ -111,6 +121,15 @@ class DocumentGenerator:
 
     @staticmethod
     def _title(prompt: str, fallback: str) -> str:
+        if "workflow" in prompt.lower():
+            goal_match = re.search(r"\bgoal\s*:\s*(.+?)(?=\n\s*\n|\Z)", prompt, flags=re.I | re.S)
+            if goal_match:
+                goal = re.sub(r"\s+", " ", goal_match.group(1)).strip(" .")
+                goal = re.sub(r"^(?:to\s+)?(?:create|build)\s+", "", goal, flags=re.I)
+                return f"{shorten(goal.title(), width=62, placeholder='')} Workflow".strip()
+            project_match = re.search(r"create a workflow document for\s+(.+?)\.", prompt, flags=re.I)
+            if project_match:
+                return f"{project_match.group(1).strip().title()} Workflow"
         if re.search(r"\bclinilocker\b", prompt, flags=re.I) and re.search(r"\bbusiness plan\b", prompt, flags=re.I):
             return "Clinilocker HealthTech Business Plan"
         cleaned = re.sub(r"\b(create|generate|make|write|draft|prepare|a|an|the|document|doc|file|report|deck|spreadsheet|pdf|docx|pptx|xlsx)\b", " ", prompt, flags=re.I)
@@ -131,6 +150,22 @@ class DocumentGenerator:
         section_key = section.lower().strip()
         lower_topic = topic.lower()
         raw_prompt = prompt.lower()
+
+        if "workflow" in raw_prompt:
+            workflow_map = {
+                "workflow overview": f"This execution plan organizes {topic} into accountable phases, practical tasks, and review points. It is designed to turn the stated goal into a deliverable plan rather than a high-level research report.",
+                "goal": f"Deliver the agreed outcome for {topic}. Keep the work focused on the user-provided scope and validate each phase before moving forward.",
+                "scope and assumptions": "- Work only within the stated project context and requirements.\n- Confirm missing compliance, budget, technical, and stakeholder constraints during the first phase.\n- Treat any timeline as a target to be re-baselined after discovery.",
+                "execution phases": "1. Discovery and alignment\n- Purpose: confirm users, requirements, constraints, and success criteria.\n- Owner: Project lead.\n- Deadline: Week 1.\n\n2. Build and validate\n- Purpose: deliver the smallest useful version and test it with stakeholders.\n- Owner: Product and delivery team.\n- Deadline: Weeks 2-4.\n\n3. Launch and improve\n- Purpose: release, measure adoption, resolve issues, and prioritize improvements.\n- Owner: Project lead and operations team.\n- Deadline: Week 5 onward.",
+                "task plan": "Discovery and alignment\n- Confirm target users, problem statement, scope, and constraints. Owner: Project lead. Due: Week 1.\n- Capture requirements and acceptance criteria. Owner: Product owner. Due: Week 1.\n\nBuild and validate\n- Create the prioritized delivery backlog. Owner: Product owner. Due: Week 2.\n- Build and test the first usable release. Owner: Delivery team. Due: Week 4.\n\nLaunch and improve\n- Run the launch checklist and stakeholder review. Owner: Operations lead. Due: Week 5.\n- Review metrics and improvement requests weekly. Owner: Project lead. Due: Weekly.",
+                "dependencies": "- Confirmed scope and decision-maker approval.\n- Required people, budget, tools, and access.\n- Any legal, security, or compliance review needed before launch.\n- Stakeholder availability for validation and sign-off.",
+                "timeline and deadlines": "- Week 1: discovery, scope confirmation, and plan approval.\n- Weeks 2-4: build, validation, and readiness review.\n- Week 5: launch, measurement, and issue triage.\n- Weekly: progress review, risk review, and plan adjustment.",
+                "risks and mitigations": "- Unclear requirements — Mitigation: approve written scope and acceptance criteria in Week 1.\n- Delayed decisions — Mitigation: assign a named decision-maker and weekly review.\n- Technical or compliance blockers — Mitigation: complete early feasibility and compliance checks.\n- Timeline pressure — Mitigation: protect the minimum viable scope and defer non-critical work.",
+                "success checks": "- Every phase has an accountable owner and agreed deadline.\n- The agreed deliverable meets written acceptance criteria.\n- Required testing, review, and approvals are complete.\n- Launch metrics and feedback are reviewed within the first week.\n- Open risks have owners and mitigation actions.",
+                "immediate next actions": "1. Confirm the scope, target users, and measurable outcome with stakeholders.\n2. Name owners for discovery, delivery, review, and launch.\n3. Convert the task plan into a dated tracker.\n4. Schedule the first weekly progress and risk review.",
+            }
+            if section_key in workflow_map:
+                return workflow_map[section_key]
 
         if "clinilocker" in raw_prompt and ("healthtech" in raw_prompt or "health tech" in raw_prompt or "healthcare" in raw_prompt):
             clinilocker_map = {

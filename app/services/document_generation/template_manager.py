@@ -5,6 +5,7 @@ from app.services.document_generation.schemas import DocumentTemplate
 
 class TemplateManager:
     templates: list[DocumentTemplate] = [
+        DocumentTemplate(id="workflow-document", name="Workflow Execution Plan", kind="docx", agent_id="bolt", sections=["Workflow Overview", "Goal", "Scope and Assumptions", "Execution Phases", "Task Plan", "Dependencies", "Timeline and Deadlines", "Risks and Mitigations", "Success Checks", "Immediate Next Actions"]),
         DocumentTemplate(id="startup-business-plan", name="Startup Business Plan", kind="docx", agent_id="zeus", sections=["Executive Summary", "Problem", "Solution", "Market", "Business Model", "Go-To-Market", "Financial Plan"]),
         DocumentTemplate(id="business-proposal", name="Business Proposal", kind="docx", agent_id="zeus", sections=["Objective", "Scope", "Approach", "Timeline", "Pricing", "Next Steps"]),
         DocumentTemplate(id="research-report", name="Research Report", kind="docx", agent_id="nova", sections=["Executive Summary", "Methodology", "Key Findings", "Market Signals", "Recommendations", "Sources"]),
@@ -33,6 +34,8 @@ class TemplateManager:
 
     def route(self, prompt: str, kind: str) -> DocumentTemplate:
         normalized = prompt.lower()
+        if kind == "docx" and "workflow" in normalized:
+            return self.get("workflow-document")
         if kind == "pdf" and any(term in normalized for term in ["startup", "marketing", "strategy", "planning", "launch", "business plan"]):
             return self.get("strategy-report")
         if any(term in normalized for term in ["architecture", "technical", "api", "system design"]):
