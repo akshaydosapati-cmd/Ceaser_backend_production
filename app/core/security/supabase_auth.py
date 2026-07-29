@@ -51,7 +51,7 @@ class SupabaseAuth:
         base = (settings.frontend_app_url or "").strip()
         if not base:
             return None
-        return f"{base.rstrip('/')}/auth/callback/"
+        return f"{base.rstrip('/')}/auth/verified/"
 
     async def enroll_totp(self, access_token: str, friendly_name: str) -> dict:
         return await self._post(
