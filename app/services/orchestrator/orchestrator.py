@@ -1335,7 +1335,7 @@ class CeaserOrchestrator:
     def _is_conversation_follow_up(self, message: str) -> bool:
         return bool(
             re.search(
-                r"\b(summarize this|summarize the|explain briefly|explain in brief|brief me|brief me more|explain in detail|make it simpler|give examples|compare them|what about (him|her|it|them)|continue|why|how|turn this into|show a chart|show a table|show a list|the previous answer|this|it|them|him|her)\b",
+                r"\b(summarize this|summarize the|explain briefly|explain in brief|brief me|brief me more|explain (me )?(in )?(detail|depth)|make it simpler|give examples|compare them|what about (him|her|it|them)|continue|why|how|turn this into|show a chart|show a table|show a list|the previous answer|this|it|them|him|her)\b",
                 message,
             )
             or re.match(r"^(and|also|then|so|briefly|more|continue)\b", message)

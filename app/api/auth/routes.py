@@ -21,6 +21,7 @@ from app.schemas.auth import (
     MFAVerifyRequest,
     PasswordRecoveryRequest,
     PasswordUpdateRequest,
+    PasswordVerificationRequest,
     RefreshSessionRequest,
 )
 from app.schemas.user import UserRead
@@ -158,10 +159,45 @@ async def update_password(
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, str]:
     try:
-        await supabase_auth.update_password(bearer_token(authorization), payload.password)
+        access_token = bearer_token(authorization)
+        user = await supabase_auth.get_user(access_token)
+        email = user.get("email")
+        if not email:
+            raise HTTPException(status_code=401, detail="Sign in required")
+        await supabase_auth.login(email, payload.current_password)
+        password = payload.password
+        if (
+            len(password) < 8
+            or not any(character.isupper() for character in password)
+            or not any(character.islower() for character in password)
+            or not any(character.isdigit() for character in password)
+            or not any(not character.isalnum() for character in password)
+        ):
+            raise HTTPException(status_code=422, detail="New password does not meet the security requirements")
+        await supabase_auth.update_password(access_token, password)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise auth_error(exc) from exc
     return {"status": "ok", "message": "Password updated."}
+
+
+@router.post("/password/verify")
+async def verify_password(
+    payload: PasswordVerificationRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, str]:
+    try:
+        user = await supabase_auth.get_user(bearer_token(authorization))
+        email = user.get("email")
+        if not email:
+            raise HTTPException(status_code=401, detail="Sign in required")
+        await supabase_auth.login(email, payload.password)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise auth_error(exc) from exc
+    return {"status": "ok", "message": "Password verified."}
 
 
 @router.post("/email/resend-verification")

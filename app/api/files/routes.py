@@ -88,7 +88,10 @@ def analyze_file(file_id: str, payload: DocumentActionRequest, user: Annotated[U
 @router.get("/{file_id}/download")
 def download_file(file_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
     file = require_file_access(db, user, file_id)
-    content = StorageService().read_bytes(file.storage_path)
+    try:
+        content = StorageService().read_bytes(file.storage_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The original file is not available in this local workspace. Re-upload it to download or preview it locally.") from exc
     return Response(content=content, media_type=_media_type(file.file_type), headers={"Content-Disposition": f'attachment; filename="{file.name}"'})
 
 
@@ -97,7 +100,10 @@ def preview_file(file_id: str, user: Annotated[User, Depends(get_current_user)],
     file = require_file_access(db, user, file_id)
     if file.file_type not in {"pdf", "png", "jpg", "jpeg", "txt"}:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Preview is not available for this file type")
-    content = StorageService().read_bytes(file.storage_path)
+    try:
+        content = StorageService().read_bytes(file.storage_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The original file is not available in this local workspace. Re-upload it to preview it locally.") from exc
     return Response(content=content, media_type=_media_type(file.file_type), headers={"Content-Disposition": f'inline; filename="{file.name}"'})
 
 

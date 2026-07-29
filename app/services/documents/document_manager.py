@@ -34,5 +34,5 @@ class DocumentManager:
             f"{instruction}{target_language}{image_instruction}\n\n"
             f"Document: {file_name}\n\n"
             "Use only the document content below unless you clearly label an inference.\n\n"
-            f"{content[:24000]}"
+            f"{content[:12000]}"
         )

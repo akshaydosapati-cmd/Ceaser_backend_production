@@ -14,6 +14,11 @@ class PasswordRecoveryRequest(BaseModel):
 
 
 class PasswordUpdateRequest(BaseModel):
+    current_password: str
+    password: str
+
+
+class PasswordVerificationRequest(BaseModel):
     password: str
 
 
