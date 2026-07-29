@@ -143,8 +143,10 @@ class CeaserOrchestrator:
                 parent_message_id=parent_message_id,
             )
 
-        workflow = self.workflow_orchestrator.run(user_id=user_id, message=effective_message, conversation_id=conversation_id, file_ids=file_ids or [])
-        selected_agent_names = workflow.selected_agents
+        workflow = None
+        if self._is_explicit_workflow_creation_request(message):
+            workflow = self.workflow_orchestrator.run(user_id=user_id, message=message, conversation_id=conversation_id, file_ids=file_ids or [])
+        selected_agent_names = workflow.selected_agents if workflow else self._default_stream_agents(message)
         research_query = self._research_query(message, conversation_context)
         research_result = self._maybe_research(query=research_query, selected_agent_names=selected_agent_names)
         memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
@@ -169,9 +171,9 @@ class CeaserOrchestrator:
                 "follow_up_trace": follow_up_trace,
                 "merged_contributions": {
                     "selected_agents": selected_agent_names,
-                    "contributions": workflow.contributions,
-                    "summary": workflow.result_summary,
-                    "workflow_response": workflow.final_response,
+                    "contributions": workflow.contributions if workflow else [],
+                    "summary": workflow.result_summary if workflow else "",
+                    "workflow_response": workflow.final_response if workflow else "",
                 },
                 "research_result": research_result.model_dump() if research_result else None,
             },
@@ -199,8 +201,8 @@ class CeaserOrchestrator:
             "scope": "personal_ai_os",
             "conversation_id": conversation.id if conversation else conversation_id,
             "selected_agents": selected_agent_names,
-            "contributions": workflow.contributions,
-            "contribution_summary": workflow.result_summary,
+            "contributions": workflow.contributions if workflow else [],
+            "contribution_summary": workflow.result_summary if workflow else "Response generated.",
             "memories_used": memories,
             "research": research_result.model_dump() if research_result else None,
             "workflow": {
@@ -209,7 +211,7 @@ class CeaserOrchestrator:
                 "status": workflow.status,
                 "steps": workflow.steps,
                 "summary": workflow.result_summary,
-            },
+            } if workflow else None,
             "context_summary": {
                 "user_id": user_id,
                 "scope_name": "CEASER",
@@ -219,7 +221,7 @@ class CeaserOrchestrator:
                 "enabled_agent_count": len(selected_agent_names),
                 "captured_memory_count": len(captured_memories) + len(captured_response_memories),
                 "attached_document_count": len(attached_documents),
-                "workflow_id": workflow.workflow_id,
+                "workflow_id": workflow.workflow_id if workflow else None,
                 "request_id": request_id,
                 "parent_message_id": parent_message_id,
                 "history_message_count": conversation_context.get("history_message_count", 0),
@@ -366,10 +368,10 @@ class CeaserOrchestrator:
         selected_agent_names: list[str] = []
         workflow = None
         research_result = None
-        if self._should_run_heavy_pipeline(effective_message):
+        if self._is_explicit_workflow_creation_request(message):
             workflow = self.workflow_orchestrator.run(
                 user_id=user_id,
-                message=effective_message,
+                message=message,
                 conversation_id=conversation_id,
                 file_ids=file_ids or [],
             )
@@ -1209,25 +1211,12 @@ class CeaserOrchestrator:
         return self.research_engine.research(query)
 
     def _should_run_heavy_pipeline(self, message: str) -> bool:
-        normalized = message.lower()
-        return any(
-            term in normalized
-            for term in [
-                "create ",
-                "generate ",
-                "build ",
-                "draft ",
-                "write ",
-                "report",
-                "proposal",
-                "business plan",
-                "pitch deck",
-                "document",
-                "pdf",
-                "workflow",
-                "automation",
-            ]
-        )
+        return self._is_explicit_workflow_creation_request(message)
+
+    def _is_explicit_workflow_creation_request(self, message: str) -> bool:
+        """Persistent workflow runs are created only by an explicit request."""
+        normalized = re.sub(r"\s+", " ", message.lower()).strip()
+        return bool(re.search(r"\b(?:create|generate|build|start|run)\s+(?:a\s+|an\s+|the\s+)?workflow\b", normalized))
 
     def _should_run_research(self, message: str, selected_agents: list[str]) -> bool:
         normalized = message.lower()
