@@ -7,12 +7,13 @@ from app.models.mixins import utc_now
 from app.models.workflow import WorkflowRun, WorkflowStep
 from app.services.audit_service import AuditService
 from app.services.workflows.workflow_merger import WorkflowMerger
+from app.services.llm.workflow_llm_provider import WorkflowLLMProvider
 
 
 class WorkflowExecutor:
     def __init__(self, db: Session):
         self.db = db
-        self.registry = AgentRegistry()
+        self.registry = AgentRegistry(provider=WorkflowLLMProvider())
         self.merger = WorkflowMerger()
 
     def execute(self, *, run: WorkflowRun, workflow_name: str, base_context: dict) -> dict:
