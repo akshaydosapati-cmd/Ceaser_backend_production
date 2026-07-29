@@ -1214,9 +1214,15 @@ class CeaserOrchestrator:
         return self._is_explicit_workflow_creation_request(message)
 
     def _is_explicit_workflow_creation_request(self, message: str) -> bool:
-        """Persistent workflow runs are created only by an explicit request."""
-        normalized = re.sub(r"\s+", " ", message.lower()).strip()
-        return bool(re.search(r"\b(?:create|generate|build|start|run)\s+(?:a\s+|an\s+|the\s+)?workflow\b", normalized))
+        """Chat requests never create persistent workflow runs.
+
+        Project workflow documents are generated through the document flow and
+        saved in Files. Persistent workflow runs are reserved for dedicated
+        workflow endpoints, preventing ordinary chat prompts from polluting
+        the workflow output with orchestration metadata.
+        """
+        _ = message
+        return False
 
     def _should_run_research(self, message: str, selected_agents: list[str]) -> bool:
         normalized = message.lower()
