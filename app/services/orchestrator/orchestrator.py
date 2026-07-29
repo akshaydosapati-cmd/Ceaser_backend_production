@@ -1299,20 +1299,24 @@ class CeaserOrchestrator:
     def _follow_up_trace(self, *, message: str, conversation_context: dict, parent_message_id: str | None) -> dict:
         normalized = message.lower().strip()
         previous_research = conversation_context.get("previous_research") or {}
+        latest_assistant_message = conversation_context.get("latest_assistant_message") or {}
+        latest_user_message = conversation_context.get("latest_user_message") or {}
+        latest_assistant_content = latest_assistant_message.get("content", "") if isinstance(latest_assistant_message, dict) else ""
+        latest_user_content = latest_user_message.get("content", "") if isinstance(latest_user_message, dict) else ""
         active_topic = (
             previous_research.get("query")
             or conversation_context.get("inferred_topic")
-            or self._topic_from_previous_assistant(conversation_context.get("latest_assistant_message", {}).get("content", ""))
-            or self._topic_from_previous_user(conversation_context.get("latest_user_message", {}).get("content", ""))
+            or self._topic_from_previous_assistant(latest_assistant_content)
+            or self._topic_from_previous_user(latest_user_content)
         )
         follow_up_detected = self._is_conversation_follow_up(normalized)
         resolved_entities = list(conversation_context.get("named_entities") or [])
         if active_topic and active_topic not in resolved_entities:
             resolved_entities.insert(0, active_topic)
         context_source = []
-        if conversation_context.get("latest_user_message"):
+        if latest_user_content:
             context_source.append("previous_user_message")
-        if conversation_context.get("latest_assistant_message"):
+        if latest_assistant_content:
             context_source.append("previous_assistant_answer")
         if conversation_context.get("summary"):
             context_source.append("conversation_summary")
@@ -1323,8 +1327,8 @@ class CeaserOrchestrator:
             "active_topic": active_topic,
             "resolved_entities": resolved_entities[:6],
             "context_source": context_source,
-            "previous_user_message": (conversation_context.get("latest_user_message") or {}).get("content"),
-            "previous_assistant_excerpt": (conversation_context.get("latest_assistant_message") or {}).get("content"),
+            "previous_user_message": latest_user_content,
+            "previous_assistant_excerpt": latest_assistant_content,
             "conversation_summary": conversation_context.get("summary"),
         }
 
