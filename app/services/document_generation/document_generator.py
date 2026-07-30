@@ -162,6 +162,11 @@ class DocumentGenerator:
 
     @staticmethod
     def _title(prompt: str, fallback: str) -> str:
+        report_match = re.search(r"\b(?:report|document)\s+(?:about|on|for)\s+(.+)", prompt, flags=re.I)
+        if report_match:
+            topic = re.sub(r"\s+", " ", report_match.group(1)).strip(" .?!")
+            if topic:
+                return f"{shorten(topic.title(), width=62, placeholder='')} Report"
         if "workflow" in prompt.lower():
             goal_match = re.search(r"\bgoal\s*:\s*(.+?)(?=\n\s*\n|\Z)", prompt, flags=re.I | re.S)
             if goal_match:
