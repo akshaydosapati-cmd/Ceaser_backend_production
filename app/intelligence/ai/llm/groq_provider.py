@@ -85,7 +85,7 @@ class GroqProvider(LLMProvider):
         try:
             timeout = httpx.Timeout(
                 connect=settings.llm_connect_timeout_seconds,
-                read=settings.llm_total_timeout_seconds,
+            read=min(settings.llm_first_token_timeout_seconds, 4.0),
                 write=settings.llm_total_timeout_seconds,
                 pool=settings.llm_total_timeout_seconds,
             )

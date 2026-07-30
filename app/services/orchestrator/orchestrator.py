@@ -157,7 +157,7 @@ class CeaserOrchestrator:
         report_request = self._is_report_request(message)
         research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names) if route_decision.route is KnowledgeRoute.RESEARCH else None
         lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
-        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP}
+        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP} and not self._requires_rich_context(message)
         knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
@@ -173,8 +173,8 @@ class CeaserOrchestrator:
                 "latest_user_message": message,
                 "resolved_request_context": effective_message,
                 "memories": memories,
-                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else conversation_context["messages"],
-                "conversation_summary": conversation_context.get("summary"),
+                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else [] if lightweight_normal else conversation_context["messages"],
+                "conversation_summary": None if lightweight_normal else conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
                 "documents": attached_documents,
@@ -410,7 +410,7 @@ class CeaserOrchestrator:
         tool_calls_finished = perf_counter()
 
         lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
-        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP}
+        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP} and not self._requires_rich_context(message)
         retrieval_started = perf_counter()
         knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
             user_id=user_id,
@@ -471,8 +471,8 @@ class CeaserOrchestrator:
                 "latest_user_message": message,
                 "resolved_request_context": effective_message,
                 "memories": memories,
-                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else conversation_context["messages"],
-                "conversation_summary": conversation_context.get("summary"),
+                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else [] if lightweight_normal else conversation_context["messages"],
+                "conversation_summary": None if lightweight_normal else conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
                 "documents": attached_documents,
@@ -1187,7 +1187,7 @@ class CeaserOrchestrator:
         # Read full history for inexpensive topic resolution, but keep the LLM
         # payload compact. Sending every stored report/answer adds latency and
         # can make a focused follow-up drift back to an older request.
-        messages = self.conversations.list_messages(conversation_id=conversation.id, limit=None)
+        messages = self.conversations.list_recent_messages(conversation_id=conversation.id, limit=24)
         recent_messages = messages[-12:]
         generation_messages = messages[-6:]
         older_messages = messages[:-6]
@@ -1376,7 +1376,9 @@ class CeaserOrchestrator:
                 agents.append("Friday")
             return list(dict.fromkeys(agents))[:3]
         if any(term in normalized for term in ["business", "startup", "strategy", "market"]):
-            return ["Zeus"]
+            return ["Nova", "Zeus"]
+        if any(term in normalized for term in ["research", "search", "sources", "competitor", "market research"]):
+            return ["Nova"]
         if any(term in normalized for term in ["study", "learn", "exam", "notes"]):
             return ["Alex"]
         if any(term in normalized for term in ["content", "email", "post", "caption"]):
@@ -1387,6 +1389,15 @@ class CeaserOrchestrator:
     def _is_report_request(message: str) -> bool:
         normalized = message.lower()
         return bool(re.search(r"\b(?:report|project plan|implementation plan|system design)\b", normalized))
+
+    @staticmethod
+    def _requires_rich_context(message: str) -> bool:
+        """Keep only genuinely contextual requests on the retrieval path."""
+        normalized = message.lower()
+        return any(
+            term in normalized
+            for term in ("startup", "business", "strategy", "project plan", "report", "workflow", "market", "competitor")
+        )
 
     def _research_query(self, message: str, conversation_context: dict | None = None) -> str:
         normalized = message.strip()

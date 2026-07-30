@@ -41,13 +41,13 @@ class ResponsePipeline:
         normalized = message.lower()
         selected = (context.get("merged_contributions", {}) or {}).get("selected_agents", []) if isinstance(context, dict) else []
         if "Friday" in selected or any(term in normalized for term in ("report", "document", "project plan", "workflow", "proposal")):
-            return 1600
+            return 1100
         if any(term in normalized for term in ("in depth", "detailed", "more details", "go deeper", "elaborate", "comprehensive", "implementation details", "complete explanation")):
-            return 1300
+            return 950
         greetings = {"hello", "hi", "hey", "hello ceaser", "hi ceaser", "thanks", "thank you"}
         if normalized.strip(" .!?") in greetings:
             return 180
-        return 750
+        return 450
 
     def _build_prompt(self, *, message: str, context: dict) -> tuple[str, str]:
         current_request = str(context.get("latest_user_message") or message).strip()
@@ -107,21 +107,11 @@ class ResponsePipeline:
 
         if retrieval_scope == "none" and not documents and not memories and not evidence and not research:
             instructions = (
-                f"{self._tool_routing_rule()} "
-                "You are CEASER, a context-persistent personal AI operating system. Answer using the chronological conversation history below, "
-                "not the final user message in isolation. Continue the active topic/subtopic unless the user clearly introduces a new topic. "
-                "When the user names a different subject, answer that subject directly as the first part of the answer; never scold them for changing topics, discuss conversation management, or ask them to get back on track. "
-                f"{freshness_rule}"
+                "You are CEASER. Answer the latest user request directly, accurately, and concisely. "
+                "If the user explicitly names a new subject, switch to it without discussing conversation management. "
                 f"{report_rule}"
-                f"{friday_rule}"
-                f"{streaming_rule}"
-                f"{speed_rule}"
-                f"{fidelity_rule}"
-                f"{continuation_rule}"
-                "Choose the response format that best matches the request. "
-                f"{detail_policy}"
             )
-            return instructions, "\n\n".join([f"Current user request:\n{current_request}", continuity_context])
+            return instructions, f"User request:\n{current_request}"
 
         if retrieval_scope == "conversation_only" and conversation and not documents and not memories and not evidence:
             instructions = (

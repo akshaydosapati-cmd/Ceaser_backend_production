@@ -53,6 +53,17 @@ class ConversationRepository:
             query = query.limit(limit)
         return query.all()
 
+    def list_recent_messages(self, conversation_id: str, limit: int = 24) -> list[Message]:
+        """Return the latest messages in chronological order without loading a full chat."""
+        messages = (
+            self.db.query(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return list(reversed(messages))
+
     def create_message(self, conversation_id: str, role: str, content: str, metadata: dict | None = None) -> Message:
         message = Message(conversation_id=conversation_id, role=role, content=content, extra_metadata=metadata or {})
         self.db.add(message)

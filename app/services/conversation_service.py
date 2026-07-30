@@ -44,6 +44,9 @@ class ConversationService:
     def list_messages(self, conversation_id: str | None = None, limit: int | None = 100, offset: int = 0) -> list[Message]:
         return self.conversations.list_messages(conversation_id=conversation_id, limit=limit, offset=offset)
 
+    def list_recent_messages(self, conversation_id: str, limit: int = 24) -> list[Message]:
+        return self.conversations.list_recent_messages(conversation_id=conversation_id, limit=limit)
+
     def create_message(
         self,
         conversation_id: str,

@@ -79,7 +79,9 @@ class OpenAIProvider(LLMProvider):
             raise AIServiceUnavailableError("OpenAI quota circuit is temporarily open.")
         timeout = httpx.Timeout(
             connect=settings.llm_connect_timeout_seconds,
-            read=settings.llm_total_timeout_seconds,
+            # Streaming must either begin promptly or let the router try the
+            # next provider. A 45-second initial read defeats failover.
+            read=min(settings.llm_first_token_timeout_seconds, 4.0),
             write=settings.llm_total_timeout_seconds,
             pool=settings.llm_total_timeout_seconds,
         )

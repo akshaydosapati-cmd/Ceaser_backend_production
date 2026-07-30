@@ -45,7 +45,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("HUGGINGFACE_BASE_URL", "HF_BASE_URL"),
     )
     llm_connect_timeout_seconds: float = Field(default=10.0, alias="LLM_CONNECT_TIMEOUT_SECONDS")
-    llm_first_token_timeout_seconds: float = Field(default=8.0, alias="LLM_FIRST_TOKEN_TIMEOUT_SECONDS")
+    llm_first_token_timeout_seconds: float = Field(default=4.0, alias="LLM_FIRST_TOKEN_TIMEOUT_SECONDS")
     llm_total_timeout_seconds: float = Field(default=45.0, alias="LLM_TOTAL_TIMEOUT_SECONDS")
     llm_max_fallbacks: int = Field(default=3, alias="LLM_MAX_FALLBACKS")
     provider_circuit_breaker_seconds: int = Field(default=300, alias="PROVIDER_CIRCUIT_BREAKER_SECONDS")
