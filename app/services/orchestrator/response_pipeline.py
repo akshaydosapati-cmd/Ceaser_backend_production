@@ -62,6 +62,7 @@ class ResponsePipeline:
         streaming_rule = "" if friday_rule else self._streaming_presentation_rule()
         speed_rule = self._speed_first_rule()
         fidelity_rule = self._instruction_fidelity_rule()
+        continuation_rule = self._continuation_rule(context.get("follow_up_trace", {}))
         evidence = knowledge_context.get("evidence", "")
         freshness_rule = (
             "When live research is provided, treat its sources as the authority for present-day facts. "
@@ -98,6 +99,7 @@ class ResponsePipeline:
                 f"{streaming_rule}"
                 f"{speed_rule}"
                 f"{fidelity_rule}"
+                f"{continuation_rule}"
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
@@ -113,6 +115,7 @@ class ResponsePipeline:
                 f"{streaming_rule}"
                 f"{speed_rule}"
                 f"{fidelity_rule}"
+                f"{continuation_rule}"
                 f"{detail_policy}"
             )
             return instructions, "\n\n".join([f"Current user request:\n{current_request}", continuity_context])
@@ -131,6 +134,7 @@ class ResponsePipeline:
             f"{streaming_rule}"
             f"{speed_rule}"
             f"{fidelity_rule}"
+            f"{continuation_rule}"
             f"{detail_policy}"
         )
         context_text = "\n\n".join(
@@ -187,6 +191,18 @@ class ResponsePipeline:
             " CRITICAL USER INSTRUCTION FIDELITY: Answer exactly what the latest user request asks. The latest clear request overrides older user requests; use conversation history only to resolve references and preserve the active topic, subtopic, terminology, facts, and requested format. "
             "Do not reinterpret a focused request as a full report, project overview, or unrelated expansion. A request for implementation details means implementation details only; a request for a block diagram means a block diagram only; a request to explain hardware means hardware only. "
             "Answer every requested part, preserve the user's specific terms and numbers, and do not add unsolicited content. Never invent dates, costs, names, owners, specifications, results, status, or requirements. Use 'Not specified' when information is missing. Ask one concise clarification only when the request is genuinely ambiguous and a wrong choice would matter."
+        )
+
+    @staticmethod
+    def _continuation_rule(follow_up_trace: dict[str, Any]) -> str:
+        if not isinstance(follow_up_trace, dict) or not follow_up_trace.get("follow_up_detected"):
+            return ""
+        topic = str(follow_up_trace.get("active_topic") or "the active topic")
+        subtopic = str(follow_up_trace.get("active_subtopic") or "").strip()
+        focus = f" Focus on the active subtopic '{subtopic}'." if subtopic else ""
+        return (
+            f" This is a lightweight continuation of '{topic}'.{focus} Add new, relevant information only; do not regenerate the previous answer, restart from an introduction, or repeat prior headings, paragraphs, facts, or examples unless needed for clarity. "
+            "Use the compact previous exchange supplied in the context, skip unrelated material, and begin the continuation immediately. For open-ended requests such as 'more details' or 'in depth', aim for roughly 500–800 words unless the user asks for a different length."
         )
 
     @staticmethod

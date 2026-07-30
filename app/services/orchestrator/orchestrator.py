@@ -148,12 +148,13 @@ class CeaserOrchestrator:
             workflow = self.workflow_orchestrator.run(user_id=user_id, message=message, conversation_id=conversation_id, file_ids=file_ids or [])
         selected_agent_names = workflow.selected_agents if workflow else self._default_stream_agents(message)
         research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names) if self._should_run_research(message, selected_agent_names) else None
-        memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
-        knowledge_context = self._knowledge_context(
+        lightweight_follow_up = bool(follow_up_trace.get("follow_up_detected") and not attached_documents)
+        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
         )
+        memories = [] if lightweight_follow_up else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         final_response = self.response_pipeline.generate(
             message=message,
@@ -163,7 +164,7 @@ class CeaserOrchestrator:
                 "latest_user_message": message,
                 "resolved_request_context": effective_message,
                 "memories": memories,
-                "conversation": conversation_context["messages"],
+                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else conversation_context["messages"],
                 "conversation_summary": conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
@@ -388,14 +389,15 @@ class CeaserOrchestrator:
                 selected_agent_names=selected_agent_names,
             )
 
+        lightweight_follow_up = bool(follow_up_trace.get("follow_up_detected") and not attached_documents)
         retrieval_started = perf_counter()
-        knowledge_context = self._knowledge_context(
+        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
             file_ids=file_ids or [],
         )
-        skip_memory_retrieval = is_file_summary_request or knowledge_context.get("retrieval_scope") in {"none", "conversation_only", "web", "integrations"}
+        skip_memory_retrieval = lightweight_follow_up or is_file_summary_request or knowledge_context.get("retrieval_scope") in {"none", "conversation_only", "web", "integrations"}
         memories = [] if skip_memory_retrieval else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         retrieval_finished = perf_counter()
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
@@ -443,7 +445,7 @@ class CeaserOrchestrator:
                 "latest_user_message": message,
                 "resolved_request_context": effective_message,
                 "memories": memories,
-                "conversation": conversation_context["messages"],
+                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else conversation_context["messages"],
                 "conversation_summary": conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
@@ -1218,6 +1220,46 @@ class CeaserOrchestrator:
             "message_ids": [item.id for item in messages],
             "named_entities": named_entities,
         }
+
+    @staticmethod
+    def _lightweight_follow_up_context(follow_up_trace: dict) -> dict:
+        """Avoid intent, memory, and document retrieval for ordinary continuations."""
+        return {
+            "intent": "conversation_follow_up",
+            "output_format": "chat",
+            "evidence": "",
+            "source_count": 0,
+            "retrieval_scope": "conversation_only",
+            "retrieval_sources": ["compact_follow_up_context"],
+            "intent_domain": None,
+            "intent_subdomain": follow_up_trace.get("active_subtopic"),
+            "_intent_ms": 0,
+            "_retrieval_ms": 0,
+            "_context_total_ms": 0,
+            "_context_tokens": 0,
+            "document_metadata_load_ms": 0,
+            "file_lookup_ms": 0,
+            "chunk_load_ms": 0,
+            "vector_search_ms": 0,
+            "keyword_search_ms": 0,
+            "rerank_ms": 0,
+            "context_build_ms": 0,
+            "prompt_tokens": 0,
+            "selected_chunks": 0,
+            "cache_hit": True,
+        }
+
+    @staticmethod
+    def _follow_up_generation_context(conversation_context: dict, follow_up_trace: dict) -> list[dict]:
+        """Give the model only the last relevant exchange for a continuation."""
+        previous_user = str(follow_up_trace.get("previous_user_message") or "").strip()
+        previous_assistant = str(follow_up_trace.get("previous_assistant_excerpt") or "").strip()
+        compact: list[dict] = []
+        if previous_user:
+            compact.append({"role": "user", "content": previous_user[:1200]})
+        if previous_assistant:
+            compact.append({"role": "assistant", "content": previous_assistant[:2200]})
+        return compact or list(conversation_context.get("messages") or [])[-2:]
 
     def _maybe_research(self, query: str, selected_agent_names: list[str]):
         _ = selected_agent_names
