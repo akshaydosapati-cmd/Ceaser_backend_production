@@ -58,6 +58,7 @@ class ResponsePipeline:
         merged_contributions = context.get("merged_contributions", {}) or {}
         selected_agents = merged_contributions.get("selected_agents", []) if isinstance(merged_contributions, dict) else []
         friday_rule = self._friday_presentation_rule(message) if "Friday" in selected_agents else ""
+        streaming_rule = "" if friday_rule else self._streaming_presentation_rule()
         evidence = knowledge_context.get("evidence", "")
         freshness_rule = (
             "When live research is provided, treat its sources as the authority for present-day facts. "
@@ -91,6 +92,7 @@ class ResponsePipeline:
                 "When the user names a different subject, answer that subject directly as the first part of the answer; never scold them for changing topics, discuss conversation management, or ask them to get back on track. "
                 f"{freshness_rule}"
                 f"{friday_rule}"
+                f"{streaming_rule}"
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
@@ -103,6 +105,7 @@ class ResponsePipeline:
                 "If the user names a different subject, switch to it and answer directly. Do not repeat yourself, discuss conversation management, scold the user for changing topics, or ask them to get back on track. "
                 f"{freshness_rule}"
                 f"{friday_rule}"
+                f"{streaming_rule}"
                 f"{detail_policy}"
             )
             return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
@@ -118,6 +121,7 @@ class ResponsePipeline:
             "If document knowledge evidence is present, summarize or answer from that evidence directly and do not claim the document content is unavailable. "
             f"{freshness_rule}"
             f"{friday_rule}"
+            f"{streaming_rule}"
             f"{detail_policy}"
         )
         context_text = "\n\n".join(
@@ -148,6 +152,15 @@ class ResponsePipeline:
             "For tasks use objects with task, description, priority, status, owner, and dependency. For phases use phase, name, objective, tasks, deliverable, and status. "
             "For risks use risk, impact, mitigation, and status. Use 'Not specified' for unknown values. Never invent dates, costs, names, owners, specifications, results, status, requirements, or technical details. "
             "Keep next_steps actionable and put missing information, unverified assumptions, and required confirmation in warnings."
+        )
+
+    @staticmethod
+    def _streaming_presentation_rule() -> str:
+        return (
+            " Your response is displayed while it streams, so write it exactly in its final polished form from the first token. "
+            "Start directly with the answer—never expose planning, internal reasoning, or filler. Use valid Markdown only: headings must use '# ' or '## ' and have a blank line after them; each bullet or numbered item must be on its own line; separate paragraphs with blank lines. "
+            "Do not concatenate bold labels with text or lists, do not create malformed Markdown, and use a table only after its complete structure is known. "
+            "For a follow-up, answer the active topic directly without repeating the entire previous answer."
         )
 
     @staticmethod
