@@ -66,9 +66,10 @@ class GeminiFallbackProvider(LLMProvider):
         instructions: str,
         input_text: str,
         model: str | None = None,
+        max_output_tokens: int | None = None,
         trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
-        yield await self.generate(instructions=instructions, input_text=input_text, model=model)
+        yield await self.generate(instructions=instructions, input_text=input_text, model=model, max_output_tokens=max_output_tokens)
 
     async def _post(self, *, prompt: str, model: str, temperature: float, max_tokens: int) -> dict[str, Any]:
         if not settings.gemini_api_key:

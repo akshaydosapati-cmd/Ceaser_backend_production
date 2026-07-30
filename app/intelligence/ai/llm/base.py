@@ -36,6 +36,7 @@ class LLMProvider(ABC):
         instructions: str,
         input_text: str,
         model: str | None = None,
+        max_output_tokens: int | None = None,
         trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         raise NotImplementedError

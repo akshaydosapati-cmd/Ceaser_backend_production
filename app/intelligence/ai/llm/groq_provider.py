@@ -67,6 +67,7 @@ class GroqProvider(LLMProvider):
         instructions: str,
         input_text: str,
         model: str | None = None,
+        max_output_tokens: int | None = None,
         trace: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         if not settings.groq_api_key:
@@ -78,7 +79,7 @@ class GroqProvider(LLMProvider):
                 {"role": "user", "content": input_text},
             ],
             "temperature": 0.3,
-            "max_tokens": settings.openai_max_tokens,
+            "max_tokens": max_output_tokens or settings.openai_max_tokens,
             "stream": True,
         }
         try:

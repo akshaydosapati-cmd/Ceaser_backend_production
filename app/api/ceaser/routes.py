@@ -99,7 +99,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
     conversation_id = payload.conversation_id
     file_ids = list(payload.file_ids)
     request_id = str(uuid.uuid4())
-    logger.info("ceaser_stream_stage request_id=%s stage=request_received conversation_id=%s", request_id, conversation_id)
+    request_received = perf_counter()
+    logger.info("ceaser_latency request_id=%s request_received_ms=0 conversation_id=%s", request_id, conversation_id)
     logger.info("ceaser_stream_stage request_id=%s stage=authentication_complete user_id=%s", request_id, user_id)
 
     def event(event_type: str, data: dict | str) -> str:
@@ -107,7 +108,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
         return f"event: {event_type}\ndata: {payload_text}\n\n"
 
     async def stream() -> AsyncIterator[str]:
-        started = perf_counter()
+        started = request_received
         stage_marks: dict[str, float] = {"start": started}
         trace: dict[str, object] = {"request_id": request_id}
         first_sse_token_logged = False
@@ -128,6 +129,9 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             )
             stage_marks["prepared"] = perf_counter()
             trace["retrieval_time_ms"] = prepared.get("observability", {}).get("retrieval_time_ms")
+            trace["routing_ms"] = prepared.get("observability", {}).get("routing_ms")
+            trace["tool_calls_ms"] = prepared.get("observability", {}).get("tool_calls_ms")
+            trace["context_build_ms"] = prepared.get("observability", {}).get("retrieval_time_ms")
             logger.info(
                 "ceaser_stream_stage request_id=%s stage=intent_complete intent_ms=%s",
                 request_id,
@@ -139,10 +143,13 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 prepared.get("observability", {}).get("retrieval_time_ms"),
             )
             logger.info(
-                "ceaser_stream_stage request_id=%s stage=context_complete context_tokens=%s prepare_ms=%s retrieval_scope=%s retrieval_sources=%s",
+                "ceaser_stream_stage request_id=%s stage=context_complete context_tokens=%s prepare_ms=%s routing_ms=%s tool_calls_ms=%s context_mode=%s retrieval_scope=%s retrieval_sources=%s",
                 request_id,
                 prepared.get("observability", {}).get("context_tokens"),
                 prepared.get("observability", {}).get("prepare_ms"),
+                trace.get("routing_ms"),
+                trace.get("tool_calls_ms"),
+                prepared.get("observability", {}).get("context_mode"),
                 prepared.get("observability", {}).get("retrieval_scope"),
                 prepared.get("observability", {}).get("retrieval_sources"),
             )
@@ -201,9 +208,12 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             response = orchestrator.finalize_stream_response(prepared, response_text)
             stage_marks["complete"] = perf_counter()
             logger.info(
-                "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s llm_request_sent_ms=%s first_token_ms=%s last_token_ms=%s",
+                "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s context_build_ms=%s routing_ms=%s tool_calls_ms=%s llm_request_sent_ms=%s first_token_ms=%s last_token_ms=%s",
                 request_id,
                 trace.get("agent_started_ms"),
+                trace.get("context_build_ms"),
+                trace.get("routing_ms"),
+                trace.get("tool_calls_ms"),
                 trace.get("llm_request_sent_ms"),
                 trace.get("endpoint_ttft_ms"),
                 trace.get("total_time_ms"),

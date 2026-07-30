@@ -19,6 +19,7 @@ from app.services.conversation_service import ConversationService
 from app.services.orchestrator.context_builder import ContextBuilder
 from app.services.orchestrator.memory_capture import MemoryCapture
 from app.services.orchestrator.memory_retriever import MemoryRetriever
+from app.services.orchestrator.knowledge_router import KnowledgeRoute, KnowledgeRouter
 from app.services.orchestrator.response_pipeline import ResponsePipeline
 from app.services.orchestrator.suggestion_engine import SuggestionEngine
 from app.services.orchestrator.user_context_resolver import UserContextResolver
@@ -38,6 +39,7 @@ class CeaserOrchestrator:
         self.db = db
         self.user_context_resolver = UserContextResolver(db)
         self.memory_retriever = MemoryRetriever(db)
+        self.knowledge_router = KnowledgeRouter()
         self.agent_registry = AgentRegistry()
         self.context_builder = ContextBuilder(db)
         self.memory_capture = MemoryCapture(db)
@@ -72,6 +74,11 @@ class CeaserOrchestrator:
             parent_message_id=parent_message_id,
         )
         effective_message = self._contextualize_follow_up(effective_message, follow_up_trace)
+        route_decision = self.knowledge_router.classify(
+            message=message,
+            has_attached_files=bool(attached_documents),
+            is_follow_up=bool(follow_up_trace.get("follow_up_detected")),
+        )
         if conversation:
             self.conversations.create_message(
                 conversation_id=conversation.id,
@@ -95,7 +102,7 @@ class CeaserOrchestrator:
 
         # Integration routing must use the user's actual text, never the
         # contextual prompt wrapper added for a follow-up response.
-        calendar_response = self._maybe_calendar_response(user_id=user_id, message=message)
+        calendar_response = self._maybe_calendar_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.CALENDAR else None
         if calendar_response:
             return self._direct_response(
                 user_id=user_id,
@@ -111,7 +118,7 @@ class CeaserOrchestrator:
                 parent_message_id=parent_message_id,
             )
 
-        integration_response = self._maybe_integration_response(user_id=user_id, message=message)
+        integration_response = self._maybe_integration_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.INTEGRATION else None
         if integration_response:
             return self._direct_response(
                 user_id=user_id,
@@ -127,7 +134,7 @@ class CeaserOrchestrator:
                 parent_message_id=parent_message_id,
             )
 
-        identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message)
+        identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.MEMORY else None
         if identity_memory_response:
             return self._direct_response(
                 user_id=user_id,
@@ -147,14 +154,15 @@ class CeaserOrchestrator:
         if self._is_explicit_workflow_creation_request(message):
             workflow = self.workflow_orchestrator.run(user_id=user_id, message=message, conversation_id=conversation_id, file_ids=file_ids or [])
         selected_agent_names = workflow.selected_agents if workflow else self._default_stream_agents(message)
-        research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names) if self._should_run_research(message, selected_agent_names) else None
-        lightweight_follow_up = bool(follow_up_trace.get("follow_up_detected") and not attached_documents)
-        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._knowledge_context(
+        research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names) if route_decision.route is KnowledgeRoute.RESEARCH else None
+        lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
+        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP}
+        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
         )
-        memories = [] if lightweight_follow_up else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
+        memories = [] if lightweight_follow_up or lightweight_normal else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         final_response = self.response_pipeline.generate(
             message=message,
@@ -294,6 +302,11 @@ class CeaserOrchestrator:
             parent_message_id=parent_message_id,
         )
         effective_message = self._contextualize_follow_up(effective_message, follow_up_trace)
+        route_decision = self.knowledge_router.classify(
+            message=message,
+            has_attached_files=bool(attached_documents),
+            is_follow_up=bool(follow_up_trace.get("follow_up_detected")),
+        )
 
         if conversation:
             self.conversations.create_message(
@@ -316,7 +329,7 @@ class CeaserOrchestrator:
             if conversation.title == "New Chat":
                 self.conversations.rename(conversation, self.conversations.generate_title(message))
 
-        calendar_response = self._maybe_calendar_response(user_id=user_id, message=message)
+        calendar_response = self._maybe_calendar_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.CALENDAR else None
         if calendar_response:
             return {
                 "mode": "direct",
@@ -333,7 +346,7 @@ class CeaserOrchestrator:
                 "parent_message_id": parent_message_id,
             }
 
-        integration_response = self._maybe_integration_response(user_id=user_id, message=message)
+        integration_response = self._maybe_integration_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.INTEGRATION else None
         if integration_response:
             return {
                 "mode": "direct",
@@ -350,7 +363,7 @@ class CeaserOrchestrator:
                 "parent_message_id": parent_message_id,
             }
 
-        identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message)
+        identity_memory_response = self._maybe_identity_memory_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.MEMORY else None
         if identity_memory_response:
             return {
                 "mode": "direct",
@@ -370,6 +383,7 @@ class CeaserOrchestrator:
         selected_agent_names: list[str] = []
         workflow = None
         research_result = None
+        routing_started = perf_counter()
         if self._is_explicit_workflow_creation_request(message):
             workflow = self.workflow_orchestrator.run(
                 user_id=user_id,
@@ -378,35 +392,44 @@ class CeaserOrchestrator:
                 file_ids=file_ids or [],
             )
             selected_agent_names = workflow.selected_agents
-            if self._should_run_research(effective_message, selected_agent_names):
+            if route_decision.route is KnowledgeRoute.RESEARCH and self._should_run_research(message, selected_agent_names):
                 research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names)
         else:
             selected_agent_names = self._default_stream_agents(message)
 
-        if not research_result and self._should_run_research(message, selected_agent_names):
+        routing_finished = perf_counter()
+        tool_calls_started = perf_counter()
+        if not research_result and route_decision.route is KnowledgeRoute.RESEARCH:
             research_result = self._maybe_research(
                 query=self._research_query(message, conversation_context),
                 selected_agent_names=selected_agent_names,
             )
+        tool_calls_finished = perf_counter()
 
-        lightweight_follow_up = bool(follow_up_trace.get("follow_up_detected") and not attached_documents)
+        lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
+        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP}
         retrieval_started = perf_counter()
-        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._knowledge_context(
+        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
             file_ids=file_ids or [],
         )
-        skip_memory_retrieval = lightweight_follow_up or is_file_summary_request or knowledge_context.get("retrieval_scope") in {"none", "conversation_only", "web", "integrations"}
+        skip_memory_retrieval = lightweight_follow_up or lightweight_normal or is_file_summary_request or knowledge_context.get("retrieval_scope") in {"none", "conversation_only", "web", "integrations"}
         memories = [] if skip_memory_retrieval else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         retrieval_finished = perf_counter()
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         observability = {
             "prepare_ms": round((perf_counter() - started) * 1000, 2),
+            "routing_ms": round((routing_finished - routing_started) * 1000, 2),
+            "tool_calls_ms": round((tool_calls_finished - tool_calls_started) * 1000, 2),
             "retrieval_time_ms": round((retrieval_finished - retrieval_started) * 1000, 2),
             "intent_ms": knowledge_context.get("_intent_ms"),
             "context_tokens": knowledge_context.get("_context_tokens"),
             "retrieval_scope": knowledge_context.get("retrieval_scope"),
+            "context_mode": "follow_up" if lightweight_follow_up else "minimal" if lightweight_normal else "retrieval",
+            "knowledge_route": route_decision.route.value,
+            "knowledge_route_reason": route_decision.reason,
             "retrieval_sources": knowledge_context.get("retrieval_sources", []),
             "file_lookup_ms": request_trace.get("file_lookup_ms") or knowledge_context.get("file_lookup_ms"),
             "permission_check_ms": request_trace.get("permission_check_ms"),
@@ -1248,6 +1271,43 @@ class CeaserOrchestrator:
             "selected_chunks": 0,
             "cache_hit": True,
         }
+
+    @staticmethod
+    def _minimal_chat_context() -> dict:
+        """Normal questions should not pay for retrieval that they do not need."""
+        return {
+            "intent": "general_chat",
+            "output_format": "chat",
+            "evidence": "",
+            "source_count": 0,
+            "retrieval_scope": "none",
+            "retrieval_sources": ["minimal_chat_context"],
+            "intent_domain": None,
+            "intent_subdomain": None,
+            "_intent_ms": 0,
+            "_retrieval_ms": 0,
+            "_context_total_ms": 0,
+            "_context_tokens": 0,
+            "document_metadata_load_ms": 0,
+            "file_lookup_ms": 0,
+            "chunk_load_ms": 0,
+            "vector_search_ms": 0,
+            "keyword_search_ms": 0,
+            "rerank_ms": 0,
+            "context_build_ms": 0,
+            "prompt_tokens": 0,
+            "selected_chunks": 0,
+            "cache_hit": True,
+        }
+
+    @staticmethod
+    def _can_use_minimal_chat_context(*, message: str, attached_documents: list[dict], file_ids: list[str], research_result: Any) -> bool:
+        if attached_documents or file_ids or research_result:
+            return False
+        normalized = message.lower()
+        memory_terms = ("remember", "memory", "my preference", "about me", "what do you know about me", "saved information")
+        document_terms = ("document", "pdf", "file", "attachment", "uploaded", "knowledge base")
+        return not any(term in normalized for term in memory_terms + document_terms)
 
     @staticmethod
     def _follow_up_generation_context(conversation_context: dict, follow_up_trace: dict) -> list[dict]:

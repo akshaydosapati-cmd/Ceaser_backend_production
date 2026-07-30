@@ -106,6 +106,7 @@ async def stream_text(
                 instructions=instructions,
                 input_text=input_text,
                 model=None,
+                max_output_tokens=max_output_tokens,
                 trace=trace,
             ):
                 if not chunk:

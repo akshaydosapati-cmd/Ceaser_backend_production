@@ -26,12 +26,28 @@ class ResponsePipeline:
     async def stream(self, message: str, context: dict, *, trace: dict[str, Any] | None = None) -> AsyncIterator[str]:
         prompt_started = perf_counter()
         instructions, context_text = self._build_prompt(message=message, context=context)
+        output_budget = self._stream_output_budget(message=message, context=context)
         if trace is not None:
             trace["context_tokens"] = self._estimate_tokens(f"{instructions}\n\n{context_text}")
             trace["prompt_tokens"] = trace["context_tokens"]
             trace["prompt_build_ms"] = round((perf_counter() - prompt_started) * 1000, 2)
-        async for chunk in stream_text(instructions=instructions, input_text=context_text, trace=trace):
+            trace["max_output_tokens"] = output_budget
+        async for chunk in stream_text(instructions=instructions, input_text=context_text, max_output_tokens=output_budget, trace=trace):
             yield chunk
+
+    @staticmethod
+    def _stream_output_budget(*, message: str, context: dict) -> int:
+        """Reserve only the completion budget needed for the current request."""
+        normalized = message.lower()
+        selected = (context.get("merged_contributions", {}) or {}).get("selected_agents", []) if isinstance(context, dict) else []
+        if "Friday" in selected or any(term in normalized for term in ("report", "document", "project plan", "workflow", "proposal")):
+            return 900
+        if any(term in normalized for term in ("in depth", "detailed", "more details", "go deeper", "elaborate")):
+            return 700
+        greetings = {"hello", "hi", "hey", "hello ceaser", "hi ceaser", "thanks", "thank you"}
+        if normalized.strip(" .!?") in greetings:
+            return 180
+        return 420
 
     def _build_prompt(self, *, message: str, context: dict) -> tuple[str, str]:
         current_request = str(context.get("latest_user_message") or message).strip()
