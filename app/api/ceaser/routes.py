@@ -257,7 +257,18 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             logger.exception("ceaser_chat_stream_failed user_id=%s conversation_id=%s", user_id, conversation_id)
             yield event("error", {"message": "We couldn't complete your request. Please try again."})
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    # Keep SSE events flowing through hosting proxies as they are produced.
+    # Without no-transform / X-Accel-Buffering, a proxy can hold small token
+    # events and make a genuine stream look like one delayed final response.
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _chunk_text(text: str, max_chars: int = 120) -> list[str]:

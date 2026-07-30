@@ -154,6 +154,7 @@ class CeaserOrchestrator:
         if self._is_explicit_workflow_creation_request(message):
             workflow = self.workflow_orchestrator.run(user_id=user_id, message=message, conversation_id=conversation_id, file_ids=file_ids or [])
         selected_agent_names = workflow.selected_agents if workflow else self._default_stream_agents(message)
+        report_request = self._is_report_request(message)
         research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names) if route_decision.route is KnowledgeRoute.RESEARCH else None
         lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
         lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP}
@@ -185,6 +186,7 @@ class CeaserOrchestrator:
                     "summary": workflow.result_summary if workflow else "",
                     "workflow_response": workflow.final_response if workflow else "",
                 },
+                "report_request": report_request,
                 "research_result": research_result.model_dump() if research_result else None,
             },
         )
@@ -381,6 +383,7 @@ class CeaserOrchestrator:
             }
 
         selected_agent_names: list[str] = []
+        report_request = self._is_report_request(message)
         workflow = None
         research_result = None
         routing_started = perf_counter()
@@ -481,6 +484,7 @@ class CeaserOrchestrator:
                     "summary": workflow.result_summary if workflow else "",
                     "workflow_response": workflow.final_response if workflow else "",
                 },
+                "report_request": report_request,
                 "research_result": research_result.model_dump() if research_result else None,
             },
         }
@@ -502,7 +506,10 @@ class CeaserOrchestrator:
             )
 
         if self.response_pipeline.requires_structured_response(prepared.get("context", {})):
-            final_response = self.response_pipeline.normalize_structured_response(final_response)
+            final_response = self.response_pipeline.normalize_structured_response(
+                final_response,
+                project_report=bool(prepared.get("context", {}).get("report_request")),
+            )
 
         workflow = prepared.get("workflow")
         follow_up_trace = prepared.get("follow_up_trace") or {}
@@ -1354,8 +1361,20 @@ class CeaserOrchestrator:
 
     def _default_stream_agents(self, message: str) -> list[str]:
         normalized = message.lower()
-        if any(term in normalized for term in ["project report", "full report", "create a report", "generate a report", "make a report", "implementation plan", "project plan", "system design"]):
-            return ["Friday"]
+        if self._is_report_request(message):
+            # Reports should be informed by the relevant specialties, not be
+            # treated as a Friday-only content request. The final report is
+            # still one coherent response from the primary LLM.
+            agents = ["Nova"]
+            if any(term in normalized for term in ["business", "startup", "strategy", "market", "revenue", "growth", "saas"]):
+                agents.append("Zeus")
+            if any(term in normalized for term in ["technical", "system", "software", "app", "platform", "ai", "robot", "robotics", "engineering", "architecture", "healthcare"]):
+                agents.append("Atlas")
+            if any(term in normalized for term in ["project plan", "implementation plan", "execution", "timeline", "tasks", "milestone", "deadline"]):
+                agents.append("Bolt")
+            if any(term in normalized for term in ["content", "marketing", "campaign", "brand", "social"]):
+                agents.append("Friday")
+            return list(dict.fromkeys(agents))[:3]
         if any(term in normalized for term in ["business", "startup", "strategy", "market"]):
             return ["Zeus"]
         if any(term in normalized for term in ["study", "learn", "exam", "notes"]):
@@ -1363,6 +1382,11 @@ class CeaserOrchestrator:
         if any(term in normalized for term in ["content", "email", "post", "caption"]):
             return ["Friday"]
         return ["Alex"]
+
+    @staticmethod
+    def _is_report_request(message: str) -> bool:
+        normalized = message.lower()
+        return bool(re.search(r"\b(?:report|project plan|implementation plan|system design)\b", normalized))
 
     def _research_query(self, message: str, conversation_context: dict | None = None) -> str:
         normalized = message.strip()

@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
+import os
 from time import perf_counter
 from uuid import uuid4
 
@@ -42,8 +43,27 @@ from app.services.automations.automation_worker import automation_worker
 logger = logging.getLogger(__name__)
 
 
+def configure_application_logging() -> None:
+    """Ensure CEASER provider telemetry reaches Render stdout."""
+    app_logger = logging.getLogger("app")
+    level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    app_logger.setLevel(level)
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        app_logger.addHandler(handler)
+    # Uvicorn configures its own loggers. Keep CEASER logs single-emission.
+    app_logger.propagate = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info(
+        "ceaser_llm_configuration primary=%s provider_order=%s openai_key_configured=%s",
+        settings.llm_provider,
+        settings.llm_provider_order_raw,
+        bool(settings.openai_api_key),
+    )
     automation_worker.start()
     try:
         yield
@@ -52,6 +72,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    configure_application_logging()
     app = FastAPI(title="CEASER Backend", version="0.1.0", lifespan=lifespan)
 
     app.add_middleware(
