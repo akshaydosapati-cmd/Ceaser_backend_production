@@ -147,9 +147,8 @@ class CeaserOrchestrator:
         if self._is_explicit_workflow_creation_request(message):
             workflow = self.workflow_orchestrator.run(user_id=user_id, message=message, conversation_id=conversation_id, file_ids=file_ids or [])
         selected_agent_names = workflow.selected_agents if workflow else self._default_stream_agents(message)
-        research_query = self._research_query(message, conversation_context)
-        research_result = self._maybe_research(query=research_query, selected_agent_names=selected_agent_names)
-        memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names) if self._should_run_research(message, selected_agent_names) else None
+        memories = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
         knowledge_context = self._knowledge_context(
             user_id=user_id,
             message=effective_message,
@@ -157,10 +156,12 @@ class CeaserOrchestrator:
         )
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         final_response = self.response_pipeline.generate(
-            message=effective_message,
+            message=message,
             context={
                 "scope": {"name": "CEASER", "type": "personal_ai_os"},
-                "current_message": effective_message,
+                "current_message": message,
+                "latest_user_message": message,
+                "resolved_request_context": effective_message,
                 "memories": memories,
                 "conversation": conversation_context["messages"],
                 "conversation_summary": conversation_context.get("summary"),
@@ -379,9 +380,9 @@ class CeaserOrchestrator:
             if self._should_run_research(effective_message, selected_agent_names):
                 research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names)
         else:
-            selected_agent_names = self._default_stream_agents(effective_message)
+            selected_agent_names = self._default_stream_agents(message)
 
-        if not research_result and self._should_run_research(effective_message, selected_agent_names):
+        if not research_result and self._should_run_research(message, selected_agent_names):
             research_result = self._maybe_research(
                 query=self._research_query(message, conversation_context),
                 selected_agent_names=selected_agent_names,
@@ -438,7 +439,9 @@ class CeaserOrchestrator:
             "follow_up_trace": follow_up_trace,
             "context": {
                 "scope": {"name": "CEASER", "type": "personal_ai_os"},
-                "current_message": effective_message,
+                "current_message": message,
+                "latest_user_message": message,
+                "resolved_request_context": effective_message,
                 "memories": memories,
                 "conversation": conversation_context["messages"],
                 "conversation_summary": conversation_context.get("summary"),

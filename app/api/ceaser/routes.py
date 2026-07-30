@@ -168,7 +168,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             yield event("status", {"state": "generating"})
             chunks: list[str] = []
             async for chunk in orchestrator.response_pipeline.stream(
-                prepared["effective_message"],
+                prepared["message"],
                 prepared["context"],
                 trace=trace,
             ):

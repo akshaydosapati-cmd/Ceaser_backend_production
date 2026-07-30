@@ -34,7 +34,8 @@ class ResponsePipeline:
             yield chunk
 
     def _build_prompt(self, *, message: str, context: dict) -> tuple[str, str]:
-        detail_policy = self._detail_policy(message)
+        current_request = str(context.get("latest_user_message") or message).strip()
+        detail_policy = self._detail_policy(current_request)
         knowledge_context = context.get("knowledge_context", {}) or {}
         intent = (knowledge_context.get("intent") or "").lower()
         retrieval_scope = (knowledge_context.get("retrieval_scope") or "").lower()
@@ -57,9 +58,10 @@ class ResponsePipeline:
         research = context.get("research_result")
         merged_contributions = context.get("merged_contributions", {}) or {}
         selected_agents = merged_contributions.get("selected_agents", []) if isinstance(merged_contributions, dict) else []
-        friday_rule = self._friday_presentation_rule(message) if "Friday" in selected_agents else ""
+        friday_rule = self._friday_presentation_rule(current_request) if "Friday" in selected_agents else ""
         streaming_rule = "" if friday_rule else self._streaming_presentation_rule()
         speed_rule = self._speed_first_rule()
+        fidelity_rule = self._instruction_fidelity_rule()
         evidence = knowledge_context.get("evidence", "")
         freshness_rule = (
             "When live research is provided, treat its sources as the authority for present-day facts. "
@@ -95,10 +97,11 @@ class ResponsePipeline:
                 f"{friday_rule}"
                 f"{streaming_rule}"
                 f"{speed_rule}"
+                f"{fidelity_rule}"
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
-            return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
+            return instructions, "\n\n".join([f"Current user request:\n{current_request}", continuity_context])
 
         if retrieval_scope == "conversation_only" and conversation and not documents and not memories and not evidence:
             instructions = (
@@ -109,9 +112,10 @@ class ResponsePipeline:
                 f"{friday_rule}"
                 f"{streaming_rule}"
                 f"{speed_rule}"
+                f"{fidelity_rule}"
                 f"{detail_policy}"
             )
-            return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
+            return instructions, "\n\n".join([f"Current user request:\n{current_request}", continuity_context])
 
         instructions = (
             f"{self._tool_routing_rule()} "
@@ -126,11 +130,12 @@ class ResponsePipeline:
             f"{friday_rule}"
             f"{streaming_rule}"
             f"{speed_rule}"
+            f"{fidelity_rule}"
             f"{detail_policy}"
         )
         context_text = "\n\n".join(
                 [
-                    f"User request:\n{message}",
+                    f"Current user request:\n{current_request}",
                     continuity_context,
                     f"Memories:\n{memories}",
                     f"Documents:\n{documents}",
@@ -174,6 +179,14 @@ class ResponsePipeline:
             "Answer simple questions immediately. For normal requests, give the direct answer first and then only relevant supporting detail. "
             "Do not over-plan, repeat the user request, overgenerate, or create a long report unless explicitly requested. Use external research or integrations only when genuinely required. "
             "For follow-ups, answer only the requested part of the active topic. Never expose internal reasoning."
+        )
+
+    @staticmethod
+    def _instruction_fidelity_rule() -> str:
+        return (
+            " CRITICAL USER INSTRUCTION FIDELITY: Answer exactly what the latest user request asks. The latest clear request overrides older user requests; use conversation history only to resolve references and preserve the active topic, subtopic, terminology, facts, and requested format. "
+            "Do not reinterpret a focused request as a full report, project overview, or unrelated expansion. A request for implementation details means implementation details only; a request for a block diagram means a block diagram only; a request to explain hardware means hardware only. "
+            "Answer every requested part, preserve the user's specific terms and numbers, and do not add unsolicited content. Never invent dates, costs, names, owners, specifications, results, status, or requirements. Use 'Not specified' when information is missing. Ask one concise clarification only when the request is genuinely ambiguous and a wrong choice would matter."
         )
 
     @staticmethod
