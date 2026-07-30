@@ -41,13 +41,13 @@ class ResponsePipeline:
         normalized = message.lower()
         selected = (context.get("merged_contributions", {}) or {}).get("selected_agents", []) if isinstance(context, dict) else []
         if "Friday" in selected or any(term in normalized for term in ("report", "document", "project plan", "workflow", "proposal")):
-            return 900
-        if any(term in normalized for term in ("in depth", "detailed", "more details", "go deeper", "elaborate")):
-            return 700
+            return 1600
+        if any(term in normalized for term in ("in depth", "detailed", "more details", "go deeper", "elaborate", "comprehensive", "implementation details", "complete explanation")):
+            return 1300
         greetings = {"hello", "hi", "hey", "hello ceaser", "hi ceaser", "thanks", "thank you"}
         if normalized.strip(" .!?") in greetings:
             return 180
-        return 420
+        return 750
 
     def _build_prompt(self, *, message: str, context: dict) -> tuple[str, str]:
         current_request = str(context.get("latest_user_message") or message).strip()
@@ -195,10 +195,10 @@ class ResponsePipeline:
     @staticmethod
     def _speed_first_rule() -> str:
         return (
-            " Speed is a priority: begin useful output immediately and aim to complete ordinary requests in about five seconds when no external tool, large document, or heavy workflow is required. "
-            "Answer simple questions immediately. For normal requests, give the direct answer first and then only relevant supporting detail. "
+            " Speed is a priority for response start: begin useful output immediately and stream continuously. Do not wait for a complete answer before sending the first useful content. "
+            "Fast start does not mean a short answer. Answer simple questions immediately; for normal requests, give the direct answer first and then relevant supporting detail. "
             "Do not over-plan, repeat the user request or conversation history, overgenerate, or create a long report unless explicitly requested. Use external research, retrieval, document processing, or integrations only when genuinely required. "
-            "For follow-ups, answer only the requested part of the active topic. Never expose internal reasoning."
+            "When the user requests details, depth, implementation detail, a comprehensive explanation, or a full report, provide substantial useful content without padding or repetition. For follow-ups, answer only the requested part of the active topic. Never expose internal reasoning."
         )
 
     @staticmethod
@@ -218,7 +218,7 @@ class ResponsePipeline:
         focus = f" Focus on the active subtopic '{subtopic}'." if subtopic else ""
         return (
             f" This is a lightweight continuation of '{topic}'.{focus} Add new, relevant information only; do not regenerate the previous answer, restart from an introduction, or repeat prior headings, paragraphs, facts, or examples unless needed for clarity. "
-            "Use the compact previous exchange supplied in the context, skip unrelated material, and begin the continuation immediately. For open-ended requests such as 'more details' or 'in depth', aim for roughly 500–800 words unless the user asks for a different length."
+            "Use the compact previous exchange supplied in the context, skip unrelated material, and begin the continuation immediately. For open-ended requests such as 'more details', provide substantial new detail; for 'in depth', 'detailed', or 'go deeper', provide a significantly deeper continuation (roughly 800–1500 words when the topic supports it) unless the user asks for a different length."
         )
 
     @staticmethod
