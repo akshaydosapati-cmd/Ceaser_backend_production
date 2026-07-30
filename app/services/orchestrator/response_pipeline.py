@@ -59,6 +59,7 @@ class ResponsePipeline:
         selected_agents = merged_contributions.get("selected_agents", []) if isinstance(merged_contributions, dict) else []
         friday_rule = self._friday_presentation_rule(message) if "Friday" in selected_agents else ""
         streaming_rule = "" if friday_rule else self._streaming_presentation_rule()
+        speed_rule = self._speed_first_rule()
         evidence = knowledge_context.get("evidence", "")
         freshness_rule = (
             "When live research is provided, treat its sources as the authority for present-day facts. "
@@ -93,6 +94,7 @@ class ResponsePipeline:
                 f"{freshness_rule}"
                 f"{friday_rule}"
                 f"{streaming_rule}"
+                f"{speed_rule}"
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
@@ -106,6 +108,7 @@ class ResponsePipeline:
                 f"{freshness_rule}"
                 f"{friday_rule}"
                 f"{streaming_rule}"
+                f"{speed_rule}"
                 f"{detail_policy}"
             )
             return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
@@ -122,6 +125,7 @@ class ResponsePipeline:
             f"{freshness_rule}"
             f"{friday_rule}"
             f"{streaming_rule}"
+            f"{speed_rule}"
             f"{detail_policy}"
         )
         context_text = "\n\n".join(
@@ -161,6 +165,15 @@ class ResponsePipeline:
             "Start directly with the answer—never expose planning, internal reasoning, or filler. Use valid Markdown only: headings must use '# ' or '## ' and have a blank line after them; each bullet or numbered item must be on its own line; separate paragraphs with blank lines. "
             "Do not concatenate bold labels with text or lists, do not create malformed Markdown, and use a table only after its complete structure is known. "
             "For a follow-up, answer the active topic directly without repeating the entire previous answer."
+        )
+
+    @staticmethod
+    def _speed_first_rule() -> str:
+        return (
+            " Speed is a priority: begin useful output immediately and aim to complete ordinary requests in about five seconds when no external tool, large document, or heavy workflow is required. "
+            "Answer simple questions immediately. For normal requests, give the direct answer first and then only relevant supporting detail. "
+            "Do not over-plan, repeat the user request, overgenerate, or create a long report unless explicitly requested. Use external research or integrations only when genuinely required. "
+            "For follow-ups, answer only the requested part of the active topic. Never expose internal reasoning."
         )
 
     @staticmethod
