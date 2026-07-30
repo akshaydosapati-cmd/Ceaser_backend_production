@@ -1152,11 +1152,13 @@ class CeaserOrchestrator:
                 "named_entities": [],
             }
 
-        # Read all available turns before resolving the next one.  Only the
-        # recent portion is sent verbatim to a model; older turns are compacted.
+        # Read full history for inexpensive topic resolution, but keep the LLM
+        # payload compact. Sending every stored report/answer adds latency and
+        # can make a focused follow-up drift back to an older request.
         messages = self.conversations.list_messages(conversation_id=conversation.id, limit=None)
         recent_messages = messages[-12:]
-        older_messages = messages[:-12]
+        generation_messages = messages[-6:]
+        older_messages = messages[:-6]
         compact_messages = []
         previous_research = None
         latest_user_message = None
@@ -1194,14 +1196,14 @@ class CeaserOrchestrator:
                     "research_query": research.get("query") if research else None,
                 }
             )
-        history_messages = [{"role": item.role, "content": item.content[:1600]} for item in messages]
+        topic_history_messages = [{"role": item.role, "content": item.content[:1600]} for item in messages]
+        history_messages = [{"role": item.role, "content": item.content[:1600]} for item in generation_messages]
         named_entities = self._extract_entities(compact_messages)
-        active_topic = self._active_topic_from_messages(history_messages)
-        active_subtopic = self._active_subtopic_from_messages(history_messages, active_topic)
+        active_topic = self._active_topic_from_messages(topic_history_messages)
+        active_subtopic = self._active_subtopic_from_messages(topic_history_messages, active_topic)
         return {
-            # The response pipeline receives every stored turn in chronological
-            # order.  Recent messages remain available separately for compact
-            # metadata, but no generation is reduced to the final user message.
+            # The response pipeline receives only recent turns plus the compact
+            # summary above. Topic resolution still considers the full history.
             "messages": history_messages,
             "previous_research": previous_research,
             "inferred_topic": self._infer_topic(compact_messages),

@@ -177,7 +177,7 @@ class ResponsePipeline:
         return (
             " Speed is a priority: begin useful output immediately and aim to complete ordinary requests in about five seconds when no external tool, large document, or heavy workflow is required. "
             "Answer simple questions immediately. For normal requests, give the direct answer first and then only relevant supporting detail. "
-            "Do not over-plan, repeat the user request, overgenerate, or create a long report unless explicitly requested. Use external research or integrations only when genuinely required. "
+            "Do not over-plan, repeat the user request or conversation history, overgenerate, or create a long report unless explicitly requested. Use external research, retrieval, document processing, or integrations only when genuinely required. "
             "For follow-ups, answer only the requested part of the active topic. Never expose internal reasoning."
         )
 

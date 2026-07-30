@@ -115,6 +115,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             yield event("status", {"state": "received"})
             yield event("status", {"state": "understanding_request"})
             orchestrator = CeaserOrchestrator(db)
+            trace["agent_started_ms"] = round((perf_counter() - started) * 1000, 2)
+            logger.info("ceaser_latency request_id=%s agent_started_ms=%s", request_id, trace["agent_started_ms"])
             logger.info("ceaser_stream_stage request_id=%s stage=retrieval_started", request_id)
             prepared = orchestrator.prepare_stream_request(
                 user_id=user_id,
@@ -160,12 +162,21 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 prepared["stream_trace"] = trace
                 response = orchestrator.finalize_stream_response(prepared, prepared["response"])
                 yield event("complete", response)
+                logger.info(
+                    "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s llm_request_sent_ms=not_applicable first_token_ms=%s last_token_ms=%s",
+                    request_id,
+                    trace.get("agent_started_ms"),
+                    trace.get("endpoint_ttft_ms"),
+                    trace.get("total_time_ms"),
+                )
                 logger.info("ceaser_stream_stage request_id=%s stage=request_complete total_ms=%s", request_id, trace["total_time_ms"])
                 return
 
             yield event("status", {"state": "retrieving_context"})
             stage_marks["context_ready"] = perf_counter()
             yield event("status", {"state": "generating"})
+            trace["llm_request_sent_ms"] = round((perf_counter() - started) * 1000, 2)
+            logger.info("ceaser_latency request_id=%s llm_request_sent_ms=%s", request_id, trace["llm_request_sent_ms"])
             chunks: list[str] = []
             async for chunk in orchestrator.response_pipeline.stream(
                 prepared["message"],
@@ -175,6 +186,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 chunks.append(chunk)
                 if not first_sse_token_logged:
                     trace["endpoint_ttft_ms"] = round((perf_counter() - started) * 1000, 2)
+                    logger.info("ceaser_latency request_id=%s first_token_ms=%s", request_id, trace["endpoint_ttft_ms"])
                     logger.info(
                         "ceaser_stream_stage request_id=%s stage=first_sse_token endpoint_ttft_ms=%s",
                         request_id,
@@ -188,6 +200,14 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             prepared["stream_trace"] = trace
             response = orchestrator.finalize_stream_response(prepared, response_text)
             stage_marks["complete"] = perf_counter()
+            logger.info(
+                "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s llm_request_sent_ms=%s first_token_ms=%s last_token_ms=%s",
+                request_id,
+                trace.get("agent_started_ms"),
+                trace.get("llm_request_sent_ms"),
+                trace.get("endpoint_ttft_ms"),
+                trace.get("total_time_ms"),
+            )
             logger.info(
                 "ceaser_stream_trace user_id=%s conversation_id=%s prepare_ms=%s context_ms=%s provider=%s model=%s fallback=%s first_token_ms=%s total_ms=%s",
                 user_id,
