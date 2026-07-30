@@ -1244,6 +1244,8 @@ class CeaserOrchestrator:
 
     def _default_stream_agents(self, message: str) -> list[str]:
         normalized = message.lower()
+        if any(term in normalized for term in ["project report", "full report", "create a report", "generate a report", "make a report", "implementation plan", "project plan", "system design"]):
+            return ["Friday"]
         if any(term in normalized for term in ["business", "startup", "strategy", "market"]):
             return ["Zeus"]
         if any(term in normalized for term in ["study", "learn", "exam", "notes"]):

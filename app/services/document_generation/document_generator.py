@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from textwrap import shorten
 
@@ -100,6 +101,12 @@ class DocumentGenerator:
     def _source_title(source_content: str | None) -> str:
         if not source_content:
             return "CEASER Document"
+        try:
+            payload = json.loads(source_content)
+            if isinstance(payload, dict) and isinstance(payload.get("title"), str) and payload["title"].strip():
+                return payload["title"].strip()[:90]
+        except (TypeError, ValueError):
+            pass
         for line in source_content.splitlines():
             candidate = re.sub(r"^\s*#+\s*", "", line).strip(" -:.")
             if candidate and len(candidate) <= 90 and not candidate.startswith("-"):
@@ -109,6 +116,12 @@ class DocumentGenerator:
     @staticmethod
     def _sections_from_source(content: str) -> list[tuple[str, str]]:
         """Format an existing CEASER answer without sending it through an LLM again."""
+        try:
+            payload = json.loads(content)
+            if isinstance(payload, dict) and payload.get("type") == "project_report":
+                return DocumentGenerator._project_report_sections(payload)
+        except (TypeError, ValueError):
+            pass
         sections: list[tuple[str, str]] = []
         heading = "Document Content"
         lines: list[str] = []
@@ -136,6 +149,61 @@ class DocumentGenerator:
         if lines:
             sections.append((heading, "\n".join(lines).strip()))
         return sections or [("Document Content", content or "No content was available.")]
+
+    @staticmethod
+    def _project_report_sections(payload: dict) -> list[tuple[str, str]]:
+        labels = {
+            "executive_summary": "Executive Summary",
+            "objective": "Objective",
+            "context": "Context",
+            "key_requirements": "Key Requirements",
+            "scope": "Scope",
+            "proposed_solution": "Proposed Solution",
+            "system_workflow": "System / Workflow",
+            "components": "Components / Resources",
+            "implementation": "Implementation Plan",
+            "tasks": "Task Breakdown",
+            "timeline": "Timeline",
+            "testing": "Testing & Validation",
+            "risks": "Risks & Constraints",
+            "expected_outcome": "Expected Outcome",
+            "next_steps": "Next Steps",
+        }
+        sections: list[tuple[str, str]] = []
+        for key, heading in labels.items():
+            value = payload.get(key)
+            if value in (None, "", [], {}):
+                continue
+            body = DocumentGenerator._structured_value_to_text(value)
+            if body:
+                sections.append((heading, body))
+        return sections or [("Project Report", "Requires confirmation.")]
+
+    @staticmethod
+    def _structured_value_to_text(value: object, *, indent: int = 0) -> str:
+        prefix = "  " * indent
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            lines: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    title = str(item.get("phase") or item.get("task") or item.get("type") or item.get("risk") or "Item")
+                    lines.append(f"{prefix}{title}")
+                    for key, detail in item.items():
+                        if key in {"phase", "task", "type", "risk"} or detail in (None, "", [], {}):
+                            continue
+                        lines.append(f"{prefix}- {key.replace('_', ' ').title()}: {DocumentGenerator._structured_value_to_text(detail, indent=indent + 1)}")
+                else:
+                    lines.append(f"{prefix}- {DocumentGenerator._structured_value_to_text(item, indent=indent + 1)}")
+            return "\n".join(lines)
+        if isinstance(value, dict):
+            return "\n".join(
+                f"{prefix}{key.replace('_', ' ').title()}: {DocumentGenerator._structured_value_to_text(detail, indent=indent + 1)}"
+                for key, detail in value.items()
+                if detail not in (None, "", [], {})
+            )
+        return str(value)
 
     @staticmethod
     def _clean_body(body: str) -> str:
