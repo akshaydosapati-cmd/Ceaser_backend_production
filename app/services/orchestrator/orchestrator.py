@@ -473,6 +473,9 @@ class CeaserOrchestrator:
                 parent_message_id=prepared.get("parent_message_id"),
             )
 
+        if self.response_pipeline.requires_structured_response(prepared.get("context", {})):
+            final_response = self.response_pipeline.normalize_structured_response(final_response)
+
         workflow = prepared.get("workflow")
         follow_up_trace = prepared.get("follow_up_trace") or {}
         captured_response_memories = self.memory_capture.capture_interaction(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import json
 from time import perf_counter
 from typing import Any
 
@@ -15,7 +16,8 @@ class ResponsePipeline:
     def generate(self, message: str, context: dict) -> str:
         instructions, context_text = self._build_prompt(message=message, context=context)
         try:
-            return generate_text_sync(instructions=instructions, input_text=context_text)
+            response = generate_text_sync(instructions=instructions, input_text=context_text)
+            return self.normalize_structured_response(response) if self.requires_structured_response(context) else response
         except Exception:
             if self.provider:
                 return self.provider.generate_response(message=message, context=context)
@@ -33,7 +35,6 @@ class ResponsePipeline:
 
     def _build_prompt(self, *, message: str, context: dict) -> tuple[str, str]:
         detail_policy = self._detail_policy(message)
-        structured_output_rule = self._structured_project_report_rule(message)
         knowledge_context = context.get("knowledge_context", {}) or {}
         intent = (knowledge_context.get("intent") or "").lower()
         retrieval_scope = (knowledge_context.get("retrieval_scope") or "").lower()
@@ -55,6 +56,8 @@ class ResponsePipeline:
         )
         research = context.get("research_result")
         merged_contributions = context.get("merged_contributions", {}) or {}
+        selected_agents = merged_contributions.get("selected_agents", []) if isinstance(merged_contributions, dict) else []
+        friday_rule = self._friday_presentation_rule(message) if "Friday" in selected_agents else ""
         evidence = knowledge_context.get("evidence", "")
         freshness_rule = (
             "When live research is provided, treat its sources as the authority for present-day facts. "
@@ -87,7 +90,7 @@ class ResponsePipeline:
                 "not the final user message in isolation. Continue the active topic/subtopic unless the user clearly introduces a new topic. "
                 "When the user names a different subject, answer that subject directly as the first part of the answer; never scold them for changing topics, discuss conversation management, or ask them to get back on track. "
                 f"{freshness_rule}"
-                f"{structured_output_rule}"
+                f"{friday_rule}"
                 "Choose the response format that best matches the request. "
                 f"{detail_policy}"
             )
@@ -99,7 +102,7 @@ class ResponsePipeline:
                 "You are CEASER, a context-persistent personal AI operating system. Continue the conversation naturally using the chronological chat history below. "
                 "If the user names a different subject, switch to it and answer directly. Do not repeat yourself, discuss conversation management, scold the user for changing topics, or ask them to get back on track. "
                 f"{freshness_rule}"
-                f"{structured_output_rule}"
+                f"{friday_rule}"
                 f"{detail_policy}"
             )
             return instructions, "\n\n".join([f"User request:\n{message}", continuity_context])
@@ -114,7 +117,7 @@ class ResponsePipeline:
             "Do not mention internal orchestration, selected agents, or framework names unless the user asks. "
             "If document knowledge evidence is present, summarize or answer from that evidence directly and do not claim the document content is unavailable. "
             f"{freshness_rule}"
-            f"{structured_output_rule}"
+            f"{friday_rule}"
             f"{detail_policy}"
         )
         context_text = "\n\n".join(
@@ -131,32 +134,80 @@ class ResponsePipeline:
         return instructions, context_text
 
     @staticmethod
-    def _structured_project_report_rule(message: str) -> str:
-        """Use a machine-readable contract only for project/report work."""
-        normalized = message.lower()
-        is_project_report = any(term in normalized for term in [
-            "project report", "full report", "create a report", "generate a report", "make a report",
-            "implementation plan", "project plan", "system design", "workflow document",
-        ])
-        if not is_project_report:
-            return ""
+    def _friday_presentation_rule(message: str) -> str:
+        """Friday returns data that CEASER can validate and render as UI."""
+        _ = message
         return (
-            " You are Friday, CEASER's Business & Project Strategy Agent. This is a project/report request. Return valid JSON only—no markdown fences, introduction, or commentary. "
-            "Use this schema and omit irrelevant optional keys: "
-            '{"type":"project_report","title":"string","executive_summary":"string","objective":["string"],'
-            '"context":"string","key_requirements":{"functional":["string"],"non_functional":["string"]},'
-            '"scope":{"in_scope":["string"],"out_of_scope":["string"]},"proposed_solution":"string",'
-            '"system_workflow":["Input","Processing","Decision / AI","Action","Output","Monitoring"],'
-            '"components":{"hardware":["string"],"software":["string"],"ai_intelligence":["string"],'
-            '"integrations":["string"],"infrastructure":["string"],"people_roles":["string"]},'
-            '"implementation":[{"phase":"string","objective":"string","tasks":["string"],"deliverable":"string","status":"not_started"}],'
-            '"tasks":[{"task":"string","owner":"Not specified","priority":"Not specified","status":"not_started","dependency":"Not specified"}],'
-            '"timeline":[{"phase":"string","task":"string","start":"Not specified","end":"Not specified","status":"not_started"}],'
-            '"testing":[{"type":"Functional Testing","what":"string","expected_result":"string","status":"not_started"}],'
-            '"risks":[{"risk":"string","impact":"Not specified","probability":"Not specified","mitigation":"string","status":"not_started"}],'
-            '"expected_outcome":"string","next_steps":["string"]}. '
-            "Never invent dates, owners, costs, results, or specifications; use 'Not specified' or 'Requires confirmation' instead."
+            " You are Friday, CEASER's Business Strategy Agent. Your response is consumed by the CEASER frontend. "
+            "Return valid JSON only. Do not include Markdown, headings, prose before or after the JSON, Markdown tables, or decorative explanations. "
+            "Always return this exact top-level shape: "
+            '{"type":"answer|project|research|strategy|plan|document_analysis|business_analysis|task_plan|comparison|workflow|report",'
+            '"title":"short title","summary":"2-4 sentence summary","sections":[{"title":"string","description":"string","items":[]}],'
+            '"actions":[],"next_steps":[],"warnings":[]}. '
+            "Use only sections relevant to the request. Split information into meaningful sections rather than placing a report in one item. "
+            "For tasks use objects with task, description, priority, status, owner, and dependency. For phases use phase, name, objective, tasks, deliverable, and status. "
+            "For risks use risk, impact, mitigation, and status. Use 'Not specified' for unknown values. Never invent dates, costs, names, owners, specifications, results, status, requirements, or technical details. "
+            "Keep next_steps actionable and put missing information, unverified assumptions, and required confirmation in warnings."
         )
+
+    @staticmethod
+    def requires_structured_response(context: dict) -> bool:
+        merged = context.get("merged_contributions", {}) if isinstance(context, dict) else {}
+        selected_agents = merged.get("selected_agents", []) if isinstance(merged, dict) else []
+        return "Friday" in selected_agents
+
+    @staticmethod
+    def normalize_structured_response(response: str) -> str:
+        """Validate Friday output so persisted and completed stream payloads are always usable JSON."""
+        candidate = response.strip()
+        if candidate.startswith("```"):
+            candidate = candidate.split("\n", 1)[1] if "\n" in candidate else ""
+            candidate = candidate.rsplit("```", 1)[0].strip()
+        try:
+            payload = json.loads(candidate)
+        except (TypeError, ValueError):
+            payload = None
+
+        if not isinstance(payload, dict):
+            return json.dumps({
+                "type": "answer",
+                "title": "Structured response unavailable",
+                "summary": "Friday returned a response that could not be validated as structured data.",
+                "sections": [],
+                "actions": [],
+                "next_steps": ["Regenerate the response."],
+                "warnings": ["The generated response was not valid JSON."],
+            }, ensure_ascii=False)
+
+        allowed_types = {"answer", "project", "research", "strategy", "plan", "document_analysis", "business_analysis", "task_plan", "comparison", "workflow", "report"}
+        response_type = payload.get("type") if payload.get("type") in allowed_types else "answer"
+
+        def text(value: Any, fallback: str = "") -> str:
+            return value.strip() if isinstance(value, str) and value.strip() else fallback
+
+        def items(value: Any) -> list[Any]:
+            return [item for item in value if isinstance(item, (str, int, float, bool, dict))] if isinstance(value, list) else []
+
+        sections: list[dict[str, Any]] = []
+        for section in payload.get("sections", []):
+            if not isinstance(section, dict):
+                continue
+            sections.append({
+                "title": text(section.get("title"), "Untitled section"),
+                "description": text(section.get("description")),
+                "items": items(section.get("items")),
+            })
+
+        normalized = {
+            "type": response_type,
+            "title": text(payload.get("title"), "Friday response"),
+            "summary": text(payload.get("summary"), "No summary was provided."),
+            "sections": sections,
+            "actions": items(payload.get("actions")),
+            "next_steps": items(payload.get("next_steps")),
+            "warnings": items(payload.get("warnings")),
+        }
+        return json.dumps(normalized, ensure_ascii=False)
 
     def _format_conversation_history(self, conversation: list[dict]) -> str:
         """Preserve the speaker roles so an LLM can resolve follow-up turns."""
