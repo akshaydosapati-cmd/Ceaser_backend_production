@@ -49,16 +49,19 @@ class AgentService:
         with _DEFAULT_AGENT_BOOTSTRAP_LOCK:
             if user_id in _DEFAULT_AGENT_BOOTSTRAPPED:
                 return
-        existing = {agent.name for agent in self.agents.list(user_id=user_id)}
-        changed = False
-        for agent_name, module_names in DEFAULT_AGENT_MODULES.items():
-            if agent_name in existing:
-                continue
-            agent = self.agents.create(user_id=user_id, name=agent_name, enabled=True)
-            for module_name in module_names:
-                self.agents.add_module(agent_id=agent.id, module_name=module_name, enabled=True)
-            changed = True
-        if changed:
-            self.db.commit()
-        with _DEFAULT_AGENT_BOOTSTRAP_LOCK:
+            # Hold the lock for the complete check-and-create operation. The
+            # initial page load can issue several authenticated requests at
+            # once; releasing it after the first check allows duplicate agent
+            # inserts and surfaces as a 503 from authentication.
+            existing = {agent.name for agent in self.agents.list(user_id=user_id)}
+            changed = False
+            for agent_name, module_names in DEFAULT_AGENT_MODULES.items():
+                if agent_name in existing:
+                    continue
+                agent = self.agents.create(user_id=user_id, name=agent_name, enabled=True)
+                for module_name in module_names:
+                    self.agents.add_module(agent_id=agent.id, module_name=module_name, enabled=True)
+                changed = True
+            if changed:
+                self.db.commit()
             _DEFAULT_AGENT_BOOTSTRAPPED.add(user_id)
