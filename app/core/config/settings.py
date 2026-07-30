@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     dev_auth_bypass: bool = Field(default=False, alias="DEV_AUTH_BYPASS")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
-    llm_provider_order_raw: str = Field(default="huggingface,groq,gemini,openai", alias="LLM_PROVIDER_ORDER")
+    llm_provider_order_raw: str = Field(default="groq,huggingface,gemini,openai", alias="LLM_PROVIDER_ORDER")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     huggingface_api_key: str | None = Field(

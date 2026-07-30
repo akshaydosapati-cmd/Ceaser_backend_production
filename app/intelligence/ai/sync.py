@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from time import perf_counter
 from typing import Any
@@ -121,7 +122,12 @@ async def stream_text(
                                 trace.get("model"),
                                 trace["first_token_ms"],
                             )
-                yield chunk
+                # Some compatible endpoints buffer an entire completion and emit it as
+                # one SSE delta. Preserve a responsive typed experience in that case.
+                for chunk_index, progressive_chunk in enumerate(_progressive_chunks(chunk)):
+                    if chunk_index:
+                        await asyncio.sleep(0.012)
+                    yield progressive_chunk
             total_ms = (perf_counter() - started) * 1000
             ai_provider_service.llm.router.record_success(
                 provider_name,
@@ -175,3 +181,22 @@ async def stream_text(
                 break
 
     raise AIServiceUnavailableError(repr(last_error), retryable=False)
+
+
+def _progressive_chunks(chunk: str, *, maximum_length: int = 56) -> list[str]:
+    """Keep native small deltas intact, but break buffered completions at word boundaries."""
+    if len(chunk) <= maximum_length:
+        return [chunk]
+
+    parts = re.findall(r"\S+\s*|\s+", chunk)
+    result: list[str] = []
+    current = ""
+    for part in parts:
+        if current and len(current) + len(part) > maximum_length:
+            result.append(current)
+            current = part
+        else:
+            current += part
+    if current:
+        result.append(current)
+    return result
