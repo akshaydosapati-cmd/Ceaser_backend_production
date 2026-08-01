@@ -8,10 +8,12 @@ from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database.session import SessionLocal, get_db
 from app.core.security.dependencies import get_current_user
+from app.intelligence.ai.sync import generate_text_sync
 from app.models.user import User
 from app.schemas.ceaser import CeaserChatRequest, CeaserChatResponse
 from app.services.audit_service import AuditService
@@ -20,6 +22,33 @@ from app.services.orchestrator import CeaserOrchestrator
 
 router = APIRouter(prefix="/ceaser", tags=["ceaser"])
 logger = logging.getLogger(__name__)
+
+
+class CeaserDemoRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=14000)
+
+
+class CeaserDemoResponse(BaseModel):
+    response: str
+    source: str = "live_backend"
+
+
+@router.post("/demo", response_model=CeaserDemoResponse)
+def ceaser_public_demo(payload: CeaserDemoRequest):
+    instructions = (
+        "You are CEASER, an AI operating system product demo. "
+        "Generate a concise, polished, useful answer for a public landing-page demo. "
+        "Use the provided scenario/context exactly. Do not ask for missing context unless the prompt truly has none. "
+        "Do not mention backend, APIs, tokens, providers, or internal implementation. "
+        "Keep the answer structured, specific, and under 350 words."
+    )
+    response = generate_text_sync(
+        instructions=instructions,
+        input_text=payload.message,
+        temperature=0.35,
+        max_output_tokens=650,
+    )
+    return CeaserDemoResponse(response=response)
 
 
 @router.post("/chat", response_model=CeaserChatResponse)
