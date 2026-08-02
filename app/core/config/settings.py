@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     razorpay_checkout_name: str = Field(default="CEASER", alias="RAZORPAY_CHECKOUT_NAME")
     razorpay_checkout_theme_color: str = Field(default="#6d4cff", alias="RAZORPAY_CHECKOUT_THEME_COLOR")
     razorpay_plan_map_raw: str = Field(default="{}", alias="RAZORPAY_PLAN_MAP_JSON")
+    admin_emails_raw: str = Field(default="", alias="ADMIN_EMAILS")
 
     @property
     def cors_origins(self) -> list[str]:
@@ -179,6 +180,10 @@ class Settings(BaseSettings):
                 if plan_id
             }
         return normalized
+
+    @property
+    def admin_emails(self) -> set[str]:
+        return {email.strip().lower() for email in self.admin_emails_raw.split(",") if email.strip()}
 
     @field_validator("database_url")
     @classmethod

@@ -1,4 +1,5 @@
 from app.models.agent import Agent, AgentModule
+from app.models.admin import DownloadEvent
 from app.models.audit_log import AuditLog
 from app.models.automation import Automation, AutomationRun, AutomationTemplate
 from app.models.commercial import (
@@ -31,6 +32,7 @@ from app.models.workflow import WorkflowRun, WorkflowStep
 __all__ = [
     "Agent",
     "AgentModule",
+    "DownloadEvent",
     "AuditLog",
     "Automation",
     "AutomationRun",

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.auth.routes import router as auth_router
+from app.api.admin.routes import router as admin_router
 from app.api.automations.routes import router as automations_router
 from app.api.agents.routes import router as agents_router
 from app.api.billing.routes import router as billing_router
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=503, content={"detail": exc.public_message})
 
     app.include_router(auth_router)
+    app.include_router(admin_router)
     app.include_router(automations_router)
     app.include_router(agents_router)
     app.include_router(capabilities_router)
