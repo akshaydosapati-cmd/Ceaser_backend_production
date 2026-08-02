@@ -69,13 +69,16 @@ def bearer_token(authorization: str | None) -> str:
 
 @router.post("/signup", response_model=AuthSession)
 async def signup(payload: AuthCredentials, db: Annotated[Session, Depends(get_db)]) -> AuthSession:
+    normalized_email = str(payload.email).strip().lower()
+    if UserRepository(db).get_by_email(normalized_email):
+        raise HTTPException(status_code=409, detail="Account already exists. Please sign in instead.")
     try:
-        supabase_response = await supabase_auth.signup(payload.email, payload.password)
+        supabase_response = await supabase_auth.signup(normalized_email, payload.password)
     except Exception as exc:
         raise auth_error(exc) from exc
 
     supabase_user = supabase_response.get("user") or {}
-    user = UserRepository(db).get_or_create(email=payload.email, user_id=supabase_user.get("id"))
+    user = UserRepository(db).get_or_create(email=normalized_email, user_id=supabase_user.get("id"))
     db.commit()
     db.refresh(user)
     AuditService(db).record(user_id=user.id, action="login", resource_type="auth", resource_id=user.id, metadata={"event": "signup"})
