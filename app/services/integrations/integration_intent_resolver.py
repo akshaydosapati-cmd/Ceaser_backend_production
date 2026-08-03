@@ -64,11 +64,16 @@ class IntegrationIntentResolver:
         return cleaned if len(cleaned) >= 3 else ""
 
     def _is_notion_request(self, text: str) -> bool:
-        return bool(re.search(r"\b(?:notion|workspace|database|databases|page|pages|notes|tasks|assigned|assignee)\b", text))
+        return bool(
+            re.search(r"\b(?:notion|workspace|database|databases|page|pages|notes|tasks|assigned|assignee)\b", text)
+            or re.search(r"\b(?:add|create|make|insert|new)\b.{0,80}\b(?:task|todo|to-do)\b", text)
+        )
 
     def _notion_intent(self, message: str, normalized: str) -> IntegrationIntent:
         query = self._notion_query(message)
         entities = {"query": query} if query else {}
+        if re.search(r"\b(?:add|create|make|insert|new)\b.{0,80}\b(?:task|todo|to-do)\b", normalized):
+            return IntegrationIntent("notion", "notion.create_task", self._notion_create_task_entities(message), 0.9)
         if re.search(r"\b(?:task|tasks|todo|to-do|assigned|assignee|assignment|owner|owners)\b", normalized):
             return IntegrationIntent("notion", "notion.list_tasks", entities, 0.93)
         if re.search(r"\b(?:database|databases)\b", normalized):
@@ -88,3 +93,28 @@ class IntegrationIntentResolver:
         )
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?!:\"'")
         return cleaned if len(cleaned) >= 3 else ""
+
+    def _notion_create_task_entities(self, message: str) -> dict[str, str]:
+        entities: dict[str, str] = {}
+        title_match = re.search(
+            r"\b(?:task|todo|to-do)\b(?:\s+(?:called|named|as|title[d]?))?\s+(.+?)(?:\s+(?:and\s+)?(?:assign|assigned|owner|to member|to)\b|\s+(?:due|deadline|by)\b|$)",
+            message,
+            flags=re.I,
+        )
+        if title_match:
+            title = re.sub(r"^\s*(?:called|named|as)\s+", "", title_match.group(1), flags=re.I).strip(" .?!:\"'")
+            if title:
+                entities["task_title"] = title
+        assignee_match = re.search(r"\b(?:assign|assigned|owner|to member|to)\s+(?:it\s+)?(?:to\s+)?(.+?)(?:\s+(?:due|deadline|by)\b|$)", message, flags=re.I)
+        if assignee_match:
+            assignee = re.sub(r"\b(?:member|user|workspace|in notion|on notion)\b", " ", assignee_match.group(1), flags=re.I)
+            assignee = re.sub(r"\s+", " ", assignee).strip(" .?!:\"'")
+            if assignee:
+                entities["assignee_query"] = assignee
+        due_match = re.search(r"\b(?:due|deadline|by)\s+([A-Za-z0-9, -]{3,40})", message, flags=re.I)
+        if due_match:
+            entities["due"] = due_match.group(1).strip(" .?!:\"'")
+        status_match = re.search(r"\b(?:status|stage)\s+(?:as|to)?\s*([A-Za-z -]{2,30})", message, flags=re.I)
+        if status_match:
+            entities["status"] = status_match.group(1).strip(" .?!:\"'")
+        return entities

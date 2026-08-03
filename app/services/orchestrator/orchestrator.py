@@ -1125,6 +1125,24 @@ class CeaserOrchestrator:
         if result.capability == "notion.list_tasks":
             return self._format_notion_task_tool_result(data)
 
+        if result.capability == "notion.create_task":
+            task = data.get("task") or {}
+            lines = [
+                "Created the Notion task.",
+                "",
+                f"Task: {task.get('title') or 'Untitled task'}",
+                f"Database: {task.get('database') or 'Tasks'}",
+            ]
+            if task.get("assignee_query"):
+                lines.append(f"Assignee: {task.get('assignee_query')}")
+            if task.get("status"):
+                lines.append(f"Status: {task.get('status')}")
+            if task.get("due"):
+                lines.append(f"Due: {task.get('due')}")
+            if task.get("url"):
+                lines.append(f"Notion URL: {task.get('url')}")
+            return "\n".join(lines)
+
         if result.capability == "notion.summarize_workspace":
             return self._format_notion_workspace_tool_result(data)
 

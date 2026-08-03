@@ -1,17 +1,22 @@
 from typing import Annotated
+import hashlib
+import hmac
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.config.settings import settings
 from app.core.database.session import get_db
+from app.models.integration import Integration
 from app.core.security.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.integration import IntegrationConnectRequest, IntegrationConnectResponse, IntegrationMetadataRead, IntegrationProviderRead, IntegrationRead, IntegrationRecordRead, IntegrationStatusRead
 from app.services.integrations import IntegrationManager
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
+logger = logging.getLogger(__name__)
 
 
 def manager(db: Session) -> IntegrationManager:
@@ -94,3 +99,53 @@ def provider_metadata(provider: str, user: Annotated[User, Depends(get_current_u
         return manager(db).metadata(user.id, provider)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/notion/webhook")
+async def notion_webhook(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    x_notion_signature: str | None = Header(default=None, alias="X-Notion-Signature"),
+):
+    raw_body = await request.body()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload.") from exc
+
+    verification_token = payload.get("verification_token") if isinstance(payload, dict) else None
+    if verification_token:
+        logger.info("Notion webhook verification token received")
+        return {"received": True, "verification_token": verification_token}
+
+    configured_token = settings.notion_webhook_verification_token
+    if configured_token and x_notion_signature:
+        expected = "sha256=" + hmac.new(configured_token.encode(), raw_body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, x_notion_signature):
+            raise HTTPException(status_code=401, detail="Invalid Notion webhook signature.")
+    elif configured_token:
+        raise HTTPException(status_code=401, detail="Missing Notion webhook signature.")
+
+    workspace_id = payload.get("workspace_id") if isinstance(payload, dict) else None
+    event_type = payload.get("type") if isinstance(payload, dict) else None
+    entity = payload.get("entity") if isinstance(payload, dict) else {}
+    query = db.query(Integration).filter(Integration.provider == "notion", Integration.status == "connected")
+    integrations = query.all()
+    touched = 0
+    for integration in integrations:
+        metadata = integration.metadata_json or {}
+        if workspace_id and metadata.get("workspace_id") and metadata.get("workspace_id") != workspace_id:
+            continue
+        integration.metadata_json = {
+            **metadata,
+            "notion_webhook_stale": True,
+            "notion_webhook_last_event": {
+                "type": event_type,
+                "workspace_id": workspace_id,
+                "entity": entity if isinstance(entity, dict) else {},
+            },
+        }
+        touched += 1
+    db.commit()
+    logger.info("Notion webhook processed event_type=%s stale_integrations=%s", event_type, touched)
+    return {"received": True, "stale_integrations": touched}

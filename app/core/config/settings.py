@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     notion_client_id: str | None = Field(default=None, alias="NOTION_CLIENT_ID")
     notion_client_secret: str | None = Field(default=None, alias="NOTION_CLIENT_SECRET")
     notion_oauth_redirect_uri: str = Field(default="http://localhost:8000/integrations/notion/callback", alias="NOTION_OAUTH_REDIRECT_URI")
+    notion_webhook_verification_token: str | None = Field(default=None, alias="NOTION_WEBHOOK_VERIFICATION_TOKEN")
     github_app_id: str | None = Field(default=None, alias="GITHUB_APP_ID")
     github_app_name: str = Field(default="CEASER", alias="GITHUB_APP_NAME")
     github_client_id: str | None = Field(default=None, alias="GITHUB_CLIENT_ID")

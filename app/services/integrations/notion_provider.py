@@ -13,7 +13,7 @@ class NotionProvider(BaseIntegrationProvider):
     name = "Notion"
     category = "knowledge"
     description = "Read pages, databases, blocks, titles, and metadata."
-    scopes = ["read_content"]
+    scopes = ["read_content", "insert_content", "update_content", "read_user_info"]
     auth_url = "https://api.notion.com/v1/oauth/authorize"
     token_url = "https://api.notion.com/v1/oauth/token"
     api_base_url = "https://api.notion.com/v1"
@@ -142,6 +142,45 @@ class NotionProvider(BaseIntegrationProvider):
             tasks = self._filter_items(tasks, query)
         return {"workspace": metadata.get("workspace_name"), "tasks": tasks, "users": metadata.get("users") or [], "query": query or ""}
 
+    def create_task(
+        self,
+        integration,
+        task_title: str | None = None,
+        assignee_query: str | None = None,
+        due: str | None = None,
+        status: str | None = None,
+        **_: object,
+    ) -> dict:
+        if not task_title:
+            raise ValueError("Task title is required.")
+        metadata = self.get_metadata(integration)
+        task_database = self._find_task_database(metadata.get("items") or [])
+        if not task_database:
+            raise ValueError("No shared Notion Tasks database found.")
+        database_id = task_database.get("id")
+        schema = self._database_schema(integration, database_id)
+        properties = self._task_properties(schema, task_title=task_title, assignee_query=assignee_query, users=metadata.get("users") or [], due=due, status=status)
+        headers = self._api_headers(integration.access_token)
+        with httpx.Client(timeout=16) as client:
+            response = client.post(
+                f"{self.api_base_url}/pages",
+                headers=headers,
+                json={"parent": {"database_id": database_id}, "properties": properties},
+            )
+            response.raise_for_status()
+        page = response.json()
+        return {
+            "task": {
+                "id": page.get("id"),
+                "title": task_title,
+                "database": task_database.get("title") or "Tasks",
+                "url": page.get("url"),
+                "assignee_query": assignee_query,
+                "status": status,
+                "due": due,
+            }
+        }
+
     def _cached_or_live_metadata(self, integration) -> dict:
         cached = (integration.metadata_json or {}).get("last_metadata")
         if isinstance(cached, dict):
@@ -155,6 +194,99 @@ class NotionProvider(BaseIntegrationProvider):
             for item in items
             if needle in " ".join([str(item.get("title") or ""), str(item.get("excerpt") or ""), str(item.get("properties") or "")]).lower()
         ]
+
+    def _find_task_database(self, items: list[dict]) -> dict | None:
+        databases = [item for item in items if item.get("object") == "database"]
+        for database in databases:
+            if str(database.get("title") or "").strip().lower() in {"tasks", "task", "todos", "to do", "to-do"}:
+                return database
+        for database in databases:
+            haystack = " ".join([str(database.get("title") or ""), " ".join(database.get("properties") or [])]).lower()
+            if any(term in haystack for term in ("task", "todo", "to-do", "assignee", "assigned", "status", "due")):
+                return database
+        return None
+
+    def _database_schema(self, integration, database_id: str | None) -> dict:
+        if not database_id:
+            raise ValueError("Database ID is required.")
+        with httpx.Client(timeout=12) as client:
+            response = client.get(f"{self.api_base_url}/databases/{database_id}", headers=self._api_headers(integration.access_token))
+            response.raise_for_status()
+        return response.json().get("properties") or {}
+
+    def _task_properties(self, schema: dict, *, task_title: str, assignee_query: str | None, users: list[dict], due: str | None, status: str | None) -> dict:
+        title_property = self._schema_property(schema, ("name", "task", "title"), {"title"}) or next((name for name, value in schema.items() if value.get("type") == "title"), None)
+        if not title_property:
+            raise ValueError("Tasks database does not have a title property.")
+        properties = {
+            title_property: {
+                "title": [{"text": {"content": task_title[:200]}}],
+            }
+        }
+        people_property = self._schema_property(schema, ("assignee", "assigned", "owner", "member", "person", "people", "responsible"), {"people"})
+        assignee = self._match_user(users, assignee_query) if assignee_query else None
+        if people_property and assignee:
+            properties[people_property] = {"people": [{"id": assignee["id"]}]}
+        status_property = self._schema_property(schema, ("status", "state", "stage", "progress"), {"status", "select"})
+        if status_property:
+            property_type = schema[status_property].get("type")
+            status_value = self._schema_option_name(schema[status_property], status) if property_type in {"status", "select"} else status
+            if property_type == "status" and status_value:
+                properties[status_property] = {"status": {"name": status_value}}
+            elif property_type == "select" and status_value:
+                properties[status_property] = {"select": {"name": status_value}}
+        due_property = self._schema_property(schema, ("due", "deadline", "date", "target"), {"date"})
+        if due_property and due and self._is_iso_date(due):
+            properties[due_property] = {"date": {"start": due}}
+        return properties
+
+    def _schema_property(self, schema: dict, names: tuple[str, ...], types: set[str]) -> str | None:
+        for name, value in schema.items():
+            if not isinstance(value, dict) or value.get("type") not in types:
+                continue
+            lowered = name.lower()
+            if any(token in lowered for token in names):
+                return name
+        return None
+
+    def _schema_option_name(self, property_schema: dict, preferred: str | None) -> str | None:
+        property_type = property_schema.get("type")
+        config = property_schema.get(property_type) if property_type else {}
+        options = config.get("options") if isinstance(config, dict) else []
+        names = [option.get("name") for option in options if isinstance(option, dict) and option.get("name")]
+        if preferred:
+            for name in names:
+                if name.lower() == preferred.lower():
+                    return name
+        for candidate in ("Not started", "To Do", "Todo", "Backlog", "New"):
+            for name in names:
+                if name.lower() == candidate.lower():
+                    return name
+        return names[0] if names else (preferred if property_type == "select" else None)
+
+    def _is_iso_date(self, value: str) -> bool:
+        import re
+
+        return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()))
+
+    def _match_user(self, users: list[dict], query: str | None) -> dict | None:
+        if not query:
+            return None
+        needle = query.lower()
+        compact_needle = "".join(ch for ch in needle if ch.isalnum())
+        best: tuple[int, dict] | None = None
+        for user in users:
+            haystack = " ".join([str(user.get("name") or ""), str(user.get("email") or "")]).lower()
+            compact_haystack = "".join(ch for ch in haystack if ch.isalnum())
+            score = 0
+            if needle in haystack:
+                score += 10
+            if compact_needle and compact_needle in compact_haystack:
+                score += 10
+            score += sum(2 for token in needle.split() if len(token) >= 2 and token in haystack)
+            if score and (not best or score > best[0]):
+                best = (score, user)
+        return best[1] if best else None
 
     def _exchange_token(self, body: dict) -> TokenPayload:
         credentials = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()

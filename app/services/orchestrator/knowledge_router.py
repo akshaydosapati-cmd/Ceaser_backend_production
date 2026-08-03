@@ -46,6 +46,8 @@ class KnowledgeRouter:
             return RouteDecision(KnowledgeRoute.INTEGRATION, "connected personal data request")
         if any(term in text for term in ("commit", "commits", "issue", "issues", "pull request", "pull requests", "readme")) and any(term in text for term in ("repository", "repositories", "repo", "repos", "project", "projects", "codebase")):
             return RouteDecision(KnowledgeRoute.INTEGRATION, "connected repository activity request")
+        if any(text.startswith(prefix) for prefix in ("add task", "add a task", "create task", "create a task", "make task", "make a task", "new task")):
+            return RouteDecision(KnowledgeRoute.INTEGRATION, "connected task creation request")
         if "project" in text and any(term in text for term in ("member", "members", "team", "collaborator", "collaborators", "who is working", "who are working")):
             return RouteDecision(KnowledgeRoute.MEMORY, "project membership request")
         if any(term in text for term in ("remember", "what do you know about me", "my preferences", "saved memory", "my memory", "my name is", "call me ")):

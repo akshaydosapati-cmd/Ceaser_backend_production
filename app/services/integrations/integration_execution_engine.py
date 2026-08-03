@@ -77,6 +77,9 @@ class IntegrationExecutionEngine:
             return f"Found {len(data.get('pull_requests') or [])} open pull requests."
         if capability == "notion.list_tasks":
             return f"Found {len(data.get('tasks') or [])} visible Notion tasks."
+        if capability == "notion.create_task":
+            task = data.get("task") or {}
+            return f"Created Notion task: {task.get('title') or 'Untitled task'}."
         if capability == "notion.list_databases":
             return f"Found {len(data.get('databases') or [])} visible Notion databases."
         if capability == "notion.list_pages":
