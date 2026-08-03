@@ -40,7 +40,7 @@ class KnowledgeRouter:
             return RouteDecision(KnowledgeRoute.FILE, "user file or document request")
         if any(term in text for term in ("my calendar", "my meetings", "meetings do i have", "meetings today", "meeting today", "calendar today", "calendar tomorrow", "events today")):
             return RouteDecision(KnowledgeRoute.CALENDAR, "personal calendar request")
-        if any(term in text for term in ("my emails", "my email", "read gmail", "read my gmail", "my drive", "google drive", "my files in drive", "notion", "my notion", "notion pages", "notion workspace")):
+        if any(term in text for term in ("my emails", "my email", "read gmail", "read my gmail", "my drive", "google drive", "my files in drive", "notion", "my notion", "notion page", "notion pages", "notion database", "notion databases", "notion workspace", "notion docs")):
             return RouteDecision(KnowledgeRoute.INTEGRATION, "connected personal data request")
         if any(term in text for term in ("remember", "what do you know about me", "my preferences", "saved memory", "my memory", "my name is", "call me ")):
             return RouteDecision(KnowledgeRoute.MEMORY, "personal memory request")

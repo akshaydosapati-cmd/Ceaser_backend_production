@@ -946,7 +946,7 @@ class CeaserOrchestrator:
             provider_id, label = "google-tasks", "Google Tasks"
         elif re.search(r"\b(?:show|list|read|find|check|sync)\b.{0,40}\b(?:google classroom|my assignments|my coursework)\b", normalized):
             provider_id, label = "google-classroom", "Google Classroom"
-        elif re.search(r"\b(?:show|list|read|find|check|sync|use|summarize|what)\b.{0,60}\b(?:notion|my notion|notion pages|notion workspace|workspace context|knowledge sources)\b", normalized):
+        elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what)\b.{0,80}\b(?:notion|my notion|notion page|notion pages|notion database|notion databases|notion docs|notion workspace|workspace context|knowledge sources)\b", normalized):
             provider_id, label = "notion", "Notion"
         if not provider_id:
             return None
@@ -965,11 +965,62 @@ class CeaserOrchestrator:
         if not items:
             return f"I synced {label}. I did not find any recent items to show."
 
-        if provider_id == "notion" and re.search(r"\b(?:summarize|summary|context|what you can see|overview|workspace context)\b", normalized):
-            databases = [item for item in items if item.get("object") == "database"]
-            pages = [item for item in items if item.get("object") == "page"]
+        if provider_id == "notion":
+            return self._format_notion_response(message=message, normalized=normalized, metadata=metadata, items=items)
+
+        lines = [f"I synced {label}. Here are the latest items:"]
+        for index, item in enumerate(items[:8], start=1):
+            title = (
+                item.get("title")
+                or item.get("subject")
+                or item.get("name")
+                or item.get("course_title")
+                or "Untitled"
+            )
+            detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
+            lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
+        return "\n".join(lines)
+
+    def _format_notion_response(self, *, message: str, normalized: str, metadata: dict, items: list[dict]) -> str:
+        databases = [item for item in items if item.get("object") == "database"]
+        pages = [item for item in items if item.get("object") == "page"]
+        query = self._notion_query(message)
+        matched_items = self._match_notion_items(items, query) if query else []
+
+        if re.search(r"\b(?:list|show|what|which)\b.{0,60}\b(?:database|databases)\b", normalized):
+            if not databases:
+                return "I synced Notion. I could not see any databases in the recent accessible workspace items."
+            lines = ["I synced Notion. These databases are visible:"]
+            for index, item in enumerate(databases[:10], start=1):
+                props = item.get("properties") or []
+                detail = f" - properties: {', '.join(props[:6])}" if props else ""
+                lines.append(f"{index}. {item.get('title') or 'Untitled'}{detail}")
+            return "\n".join(lines)
+
+        if re.search(r"\b(?:list|show|what|which)\b.{0,60}\b(?:page|pages|docs|documents)\b", normalized):
+            if not pages:
+                return "I synced Notion. I could not see any pages in the recent accessible workspace items."
+            lines = ["I synced Notion. These pages are visible:"]
+            for index, item in enumerate(pages[:10], start=1):
+                edited = item.get("last_edited_time")
+                lines.append(f"{index}. {item.get('title') or 'Untitled'}{f' - edited {edited}' if edited else ''}")
+            return "\n".join(lines)
+
+        if query and matched_items:
+            lines = [f"I searched your visible Notion context for \"{query}\" and found:"]
+            for index, item in enumerate(matched_items[:6], start=1):
+                title = item.get("title") or "Untitled"
+                object_type = item.get("object") or "item"
+                excerpt = item.get("excerpt") or ""
+                props = item.get("properties") or []
+                detail = excerpt[:260] if excerpt else f"Properties: {', '.join(props[:8])}" if props else ""
+                lines.append(f"{index}. {title} - {object_type}{f': {detail}' if detail else ''}")
+            return "\n".join(lines)
+
+        if re.search(r"\b(?:summarize|summary|context|what you can see|overview|workspace context)\b", normalized):
             database_titles = [item.get("title") or "Untitled" for item in databases[:6]]
             page_titles = [item.get("title") or "Untitled" for item in pages[:6]]
+            excerpts = [f"{item.get('title') or 'Untitled'}: {item.get('excerpt')}" for item in pages if item.get("excerpt")]
             lines = [
                 "I synced your Notion workspace and can see a lightweight workspace overview.",
                 "",
@@ -984,31 +1035,56 @@ class CeaserOrchestrator:
             if page_titles:
                 lines.extend(["", "Recent pages I can see:"])
                 lines.extend(f"- {title}" for title in page_titles)
+            if excerpts:
+                lines.extend(["", "Readable page context:"])
+                lines.extend(f"- {excerpt[:240]}" for excerpt in excerpts[:4])
             lines.extend(
                 [
                     "",
                     "What this suggests:",
                     "- Your Notion workspace appears organized around tasks, documents, meetings, and projects.",
                     "- CEASER can use this connection to identify visible pages and databases.",
-                    "- Full page-level summaries require reading the selected page blocks, which is the next Notion content step.",
+                    "- For deeper answers, ask CEASER to read or summarize a specific visible Notion page.",
                 ]
             )
             return "\n".join(lines)
 
-        lines = [f"I synced {label}. Here are the latest items:"]
+        if re.search(r"\b(?:read|explain|summarize)\b", normalized):
+            readable_pages = [item for item in pages if item.get("excerpt")]
+            if readable_pages:
+                lines = ["I synced Notion and read the available page excerpts:"]
+                for index, item in enumerate(readable_pages[:5], start=1):
+                    lines.append(f"{index}. {item.get('title') or 'Untitled'}: {item.get('excerpt')[:420]}")
+                return "\n".join(lines)
+            return "I synced Notion and found visible pages, but Notion did not return readable block text for those recent pages."
+
+        lines = ["I synced Notion. Here are the latest visible items:"]
         for index, item in enumerate(items[:8], start=1):
-            title = (
-                item.get("title")
-                or item.get("subject")
-                or item.get("name")
-                or item.get("course_title")
-                or "Untitled"
-            )
-            detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
-            if provider_id == "notion":
-                detail = item.get("object") or item.get("last_edited_time") or detail
+            title = item.get("title") or "Untitled"
+            detail = item.get("object") or item.get("last_edited_time") or ""
             lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
         return "\n".join(lines)
+
+    def _notion_query(self, message: str) -> str | None:
+        cleaned = re.sub(r"\b(?:notion|my|workspace|context|page|pages|database|databases|docs|documents|read|find|search|show|list|summarize|summary|explain|use|check|sync|what|are|is|connected|to|from|in|account|ceaser)\b", " ", message, flags=re.I)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?!:\"'")
+        return cleaned if len(cleaned) >= 3 else None
+
+    def _match_notion_items(self, items: list[dict], query: str) -> list[dict]:
+        needle = query.lower()
+        matches = []
+        for item in items:
+            haystack = " ".join(
+                [
+                    str(item.get("title") or ""),
+                    str(item.get("object") or ""),
+                    str(item.get("excerpt") or ""),
+                    " ".join(item.get("properties") or []),
+                ]
+            ).lower()
+            if needle in haystack:
+                matches.append(item)
+        return matches
 
     def _is_explicit_google_calendar_request(self, message: str) -> bool:
         calendar_reference = bool(re.search(r"\b(?:google calendar|my calendar|calendar|calender)\b", message))

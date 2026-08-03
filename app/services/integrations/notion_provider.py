@@ -63,10 +63,9 @@ class NotionProvider(BaseIntegrationProvider):
                 json={"page_size": 10},
             )
             search_response.raise_for_status()
-
-        user_payload = user_response.json()
-        search_payload = search_response.json()
-        items = [self._search_item(item) for item in search_payload.get("results", [])]
+            user_payload = user_response.json()
+            search_payload = search_response.json()
+            items = [self._search_item(client, headers, item) for item in search_payload.get("results", [])]
 
         return {
             "provider": self.id,
@@ -120,15 +119,54 @@ class NotionProvider(BaseIntegrationProvider):
             "Content-Type": "application/json",
         }
 
-    def _search_item(self, item: dict) -> dict:
+    def _search_item(self, client: httpx.Client, headers: dict[str, str], item: dict) -> dict:
         title = self._title_from_item(item)
+        object_type = item.get("object")
+        summary: dict = {}
+        if object_type == "page":
+            summary = {"excerpt": self._page_excerpt(client, headers, item.get("id"))}
+        elif object_type == "database":
+            summary = {"properties": self._database_properties(item)}
         return {
             "id": item.get("id"),
-            "object": item.get("object"),
+            "object": object_type,
             "title": title,
             "url": item.get("url"),
             "last_edited_time": item.get("last_edited_time"),
+            **summary,
         }
+
+    def _page_excerpt(self, client: httpx.Client, headers: dict[str, str], page_id: str | None) -> str:
+        if not page_id:
+            return ""
+        try:
+            response = client.get(f"{self.api_base_url}/blocks/{page_id}/children", headers=headers, params={"page_size": 20})
+            response.raise_for_status()
+        except Exception:
+            return ""
+        texts: list[str] = []
+        for block in response.json().get("results", []):
+            text = self._block_text(block)
+            if text:
+                texts.append(text)
+            if len(" ".join(texts)) > 1400:
+                break
+        return " ".join(texts)[:1600].strip()
+
+    def _block_text(self, block: dict) -> str:
+        block_type = block.get("type")
+        value = block.get(block_type) if block_type else None
+        if not isinstance(value, dict):
+            return ""
+        rich_text = value.get("rich_text") or value.get("title") or []
+        text = " ".join(part.get("plain_text", "") for part in rich_text if isinstance(part, dict)).strip()
+        if block_type == "to_do" and text:
+            return f"{'[done]' if value.get('checked') else '[todo]'} {text}"
+        return text
+
+    def _database_properties(self, item: dict) -> list[str]:
+        properties = item.get("properties") or {}
+        return [name for name in properties.keys() if isinstance(name, str)][:12]
 
     def _title_from_item(self, item: dict) -> str:
         if item.get("object") == "page":
