@@ -19,6 +19,7 @@ _quota_blocked_until = 0.0
 
 class OpenAIProvider(LLMProvider):
     endpoint = "https://api.openai.com/v1/chat/completions"
+    responses_endpoint = "https://api.openai.com/v1/responses"
     default_model = settings.openai_model
 
     async def generate(
@@ -30,6 +31,12 @@ class OpenAIProvider(LLMProvider):
         temperature: float | None = None,
         max_output_tokens: int | None = None,
     ) -> str:
+        if self._requires_live_web(instructions, input_text):
+            return await self._responses_web_generate(
+                instructions=instructions,
+                input_text=input_text,
+                max_output_tokens=max_output_tokens or settings.openai_max_tokens,
+            )
         data = await self._post(
             model=model or settings.openai_model,
             instructions=instructions,
@@ -74,6 +81,16 @@ class OpenAIProvider(LLMProvider):
         if not settings.openai_api_key:
             logger.error("OpenAI stream blocked: OPENAI_API_KEY is not configured.")
             raise AIServiceUnavailableError("OPENAI_API_KEY is not configured.")
+        if self._requires_live_web(instructions, input_text):
+            text = await self._responses_web_generate(
+                instructions=instructions,
+                input_text=input_text,
+                max_output_tokens=max_output_tokens or settings.openai_max_tokens,
+                trace=trace,
+            )
+            for chunk in self._progressive_chunks(text):
+                yield chunk
+            return
         global _quota_blocked_until
         if time.time() < _quota_blocked_until:
             raise AIServiceUnavailableError("OpenAI quota circuit is temporarily open.")
@@ -204,9 +221,128 @@ class OpenAIProvider(LLMProvider):
             logger.error("OpenAI generation network error: %s", repr(exc))
             raise ai_error_from_http_error(exc, provider="openai") from exc
 
+    async def _responses_web_generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        max_output_tokens: int,
+        trace: dict[str, Any] | None = None,
+    ) -> str:
+        if not settings.openai_web_search_enabled:
+            raise AIServiceUnavailableError("OpenAI web search is disabled.", retryable=True, provider="openai", category="configuration")
+        if not settings.openai_api_key:
+            logger.error("OpenAI web search blocked: OPENAI_API_KEY is not configured.")
+            raise AIServiceUnavailableError("OPENAI_API_KEY is not configured.")
+        global _quota_blocked_until
+        if time.time() < _quota_blocked_until:
+            raise AIServiceUnavailableError("OpenAI quota circuit is temporarily open.")
+        timeout = httpx.Timeout(
+            connect=settings.llm_connect_timeout_seconds,
+            read=settings.llm_total_timeout_seconds,
+            write=settings.llm_total_timeout_seconds,
+            pool=settings.llm_total_timeout_seconds,
+        )
+        payload: dict[str, Any] = {
+            "model": settings.openai_web_search_model,
+            "instructions": instructions,
+            "input": input_text,
+            "tools": [{"type": "web_search_preview"}],
+            "max_output_tokens": max_output_tokens,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                started = time.perf_counter()
+                response = await client.post(
+                    self.responses_endpoint,
+                    headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                if trace is not None:
+                    trace["provider_connect_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                    trace["model"] = settings.openai_web_search_model
+                    trace["web_search_used"] = True
+                data = response.json()
+                usage = data.get("usage") or {}
+                logger.info(
+                    "llm_usage provider=openai_web_search model=%s input_tokens=%s output_tokens=%s total_tokens=%s",
+                    settings.openai_web_search_model,
+                    usage.get("input_tokens"),
+                    usage.get("output_tokens"),
+                    usage.get("total_tokens"),
+                )
+                return self._extract_responses_text(data)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
+                _quota_blocked_until = time.time() + 600
+            logger.error(
+                "OpenAI web search failed: status=%s body=%s",
+                exc.response.status_code,
+                exc.response.text[:1200],
+            )
+            raise ai_error_from_http_error(exc, provider="openai") from exc
+        except httpx.RequestError as exc:
+            logger.error("OpenAI web search network error: %s", repr(exc))
+            raise ai_error_from_http_error(exc, provider="openai") from exc
+
     def _extract_text(self, data: dict[str, Any]) -> str:
         choices = data.get("choices") or []
         if not choices:
             return ""
         content = choices[0].get("message", {}).get("content")
         return content.strip() if isinstance(content, str) else ""
+
+    def _extract_responses_text(self, data: dict[str, Any]) -> str:
+        output_text = data.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+        parts: list[str] = []
+        for item in data.get("output") or []:
+            for content in item.get("content") or []:
+                text = content.get("text") if isinstance(content, dict) else None
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        return "\n".join(parts).strip()
+
+    def _requires_live_web(self, instructions: str, input_text: str) -> bool:
+        if not settings.openai_web_search_enabled:
+            return False
+        text = f"{instructions}\n{input_text}".lower()
+        return any(
+            term in text
+            for term in [
+                "current stats",
+                "latest stats",
+                "current statistics",
+                "latest statistics",
+                "today",
+                "latest",
+                "current",
+                "recent",
+                "live data",
+                "as of",
+                "news",
+                "stock price",
+                "weather",
+                "score",
+                "who won",
+                "centuries",
+                "records",
+            ]
+        )
+
+    def _progressive_chunks(self, text: str, *, maximum_length: int = 64) -> list[str]:
+        words = text.split(" ")
+        chunks: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and len(candidate) > maximum_length:
+                chunks.append(current + " ")
+                current = word
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        return chunks
