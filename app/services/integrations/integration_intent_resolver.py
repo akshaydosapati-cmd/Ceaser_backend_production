@@ -42,7 +42,9 @@ class IntegrationIntentResolver:
             return IntegrationIntent("github", "github.list_issues", entities, 0.94)
         if re.search(r"\b(?:pull request|pull requests|pr|prs)\b", normalized):
             return IntegrationIntent("github", "github.list_pull_requests", entities, 0.94)
-        if re.search(r"\b(?:readme|explain|describe)\b", normalized) and repository_query:
+        if re.search(r"\b(?:readme|read me)\b", normalized) and re.search(r"\b(?:list|repositories|repos|which ones|which repositories|which repos|all)\b", normalized):
+            return IntegrationIntent("github", "github.list_repositories", {"include_readme": "true"}, 0.92)
+        if re.search(r"\b(?:readme|read me|explain|describe)\b", normalized) and repository_query:
             return IntegrationIntent("github", "github.get_readme", entities, 0.9)
         if re.search(r"\b(?:summarize|summary|overview|working on|projects)\b", normalized):
             return IntegrationIntent("github", "github.summarize_repositories", entities, 0.88)
@@ -57,6 +59,7 @@ class IntegrationIntentResolver:
             message,
             flags=re.I,
         )
+        cleaned = re.sub(r"\b(?:and tell me|which ones?|have|has|with|without|content|contents?)\b", " ", cleaned, flags=re.I)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?!:\"'")
         return cleaned if len(cleaned) >= 3 else ""
 

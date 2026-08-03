@@ -1049,6 +1049,13 @@ class CeaserOrchestrator:
             repos = data.get("repositories") or []
             if not repos:
                 return "I checked your connected GitHub account, but I could not see any repositories."
+            if any("has_readme" in repo for repo in repos):
+                lines = ["I checked your connected GitHub account. README availability:"]
+                for index, repo in enumerate(repos[:20], start=1):
+                    status = "README found" if repo.get("has_readme") else "No README found"
+                    language = f" - {repo.get('language')}" if repo.get("language") else ""
+                    lines.append(f"{index}. {repo.get('full_name') or repo.get('name')}{language} - {status}")
+                return "\n".join(lines)
             lines = ["I checked your connected GitHub account. These repositories are visible:"]
             lines.extend(self._github_repo_line(index, repo) for index, repo in enumerate(repos[:12], start=1))
             return "\n".join(lines)

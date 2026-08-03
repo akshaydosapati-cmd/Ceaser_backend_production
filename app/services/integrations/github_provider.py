@@ -147,7 +147,7 @@ class GitHubProvider(BaseIntegrationProvider):
             "permissions": self.permissions,
         }
 
-    def list_repositories(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+    def list_repositories(self, integration: Integration, repository_query: str | None = None, include_readme: str | bool | None = None, **_: object) -> dict:
         headers = self._api_headers(integration.access_token)
         with httpx.Client(timeout=16) as client:
             response = client.get(
@@ -157,6 +157,12 @@ class GitHubProvider(BaseIntegrationProvider):
             )
             response.raise_for_status()
             repos = [self._compact_repo(repo) for repo in response.json()]
+            if str(include_readme).lower() == "true":
+                for repo in repos[:20]:
+                    readme = self._readme_excerpt(client, headers, repo.get("full_name"))
+                    repo["has_readme"] = bool(readme)
+                    if readme:
+                        repo["readme_preview"] = readme[:220]
         if repository_query:
             repos = self._filter_repositories(repos, repository_query)
         return {"repositories": repos, "query": repository_query or ""}
