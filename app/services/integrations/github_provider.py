@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 from urllib.parse import urlencode
 
 import httpx
@@ -9,6 +10,8 @@ from app.core.config.settings import settings
 from app.models.integration import Integration
 from app.services.integrations.base_provider import BaseIntegrationProvider
 from app.services.integrations.schemas import TokenPayload
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubProvider(BaseIntegrationProvider):
@@ -109,6 +112,12 @@ class GitHubProvider(BaseIntegrationProvider):
             metadata={"token_type": payload.get("token_type"), "scope": payload.get("scope")},
         )
 
+    def disconnect(self, integration: Integration) -> None:
+        access_token = integration.access_token
+        if access_token and self.client_id and self.client_secret:
+            self._revoke_authorization(access_token)
+        super().disconnect(integration)
+
     def get_metadata(self, integration: Integration | None) -> dict:
         if not integration or integration.status != "connected":
             return {"provider": self.id, "status": "not_connected", "items": []}
@@ -185,6 +194,21 @@ class GitHubProvider(BaseIntegrationProvider):
 
     def _api_headers(self, access_token: str | None) -> dict[str, str]:
         return {"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+
+    def _revoke_authorization(self, access_token: str) -> None:
+        try:
+            with httpx.Client(timeout=12) as client:
+                response = client.request(
+                    "DELETE",
+                    f"{self.api_base_url}/applications/{self.client_id}/grant",
+                    auth=(self.client_id or "", self.client_secret or ""),
+                    headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+                    json={"access_token": access_token},
+                )
+                if response.status_code not in {204, 404, 422}:
+                    response.raise_for_status()
+        except Exception as exc:
+            logger.warning("GitHub authorization revoke failed: %s", repr(exc))
 
     def _primary_email(self, emails: list[dict]) -> str | None:
         for item in emails:
