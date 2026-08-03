@@ -6,6 +6,7 @@ from app.services.integrations.google_calendar_provider import GoogleCalendarPro
 from app.services.integrations.google_classroom_provider import GoogleClassroomProvider
 from app.services.integrations.google_drive_provider import GoogleDriveProvider
 from app.services.integrations.google_tasks_provider import GoogleTasksProvider
+from app.services.integrations.github_provider import GitHubProvider
 from app.services.integrations.notion_provider import NotionProvider
 
 
@@ -18,6 +19,7 @@ class ProviderRegistry:
             GoogleTasksProvider(),
             GoogleClassroomProvider(),
             NotionProvider(),
+            GitHubProvider(),
         ]
         self.providers = {provider.id: provider for provider in providers}
 

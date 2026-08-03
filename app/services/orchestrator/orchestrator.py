@@ -983,6 +983,8 @@ class CeaserOrchestrator:
             provider_id, label = "google-classroom", "Google Classroom"
         elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what|who)\b.{0,90}\b(?:notion|my notion|notion page|notion pages|notion database|notion databases|notion docs|notion workspace|notion members|notion users|workspace members|workspace users|workspace context|knowledge sources)\b", normalized):
             provider_id, label = "notion", "Notion"
+        elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what|who)\b.{0,100}\b(?:github|git hub|repository|repositories|repo|repos|commit|commits|issue|issues|pull request|pull requests|prs|readme|codebase)\b", normalized):
+            provider_id, label = "github", "GitHub"
         if not provider_id:
             return None
 
@@ -1002,6 +1004,8 @@ class CeaserOrchestrator:
 
         if provider_id == "notion":
             return self._format_notion_response(message=message, normalized=normalized, metadata=metadata, items=items)
+        if provider_id == "github":
+            return self._format_github_response(message=message, normalized=normalized, metadata=metadata, items=items)
 
         lines = [f"I synced {label}. Here are the latest items:"]
         for index, item in enumerate(items[:8], start=1):
@@ -1015,6 +1019,88 @@ class CeaserOrchestrator:
             detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
             lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
         return "\n".join(lines)
+
+    def _format_github_response(self, *, message: str, normalized: str, metadata: dict, items: list[dict]) -> str:
+        query = self._github_query(message)
+        matched_repos = self._match_github_repos(items, query) if query else []
+        repos = matched_repos or items
+
+        if re.search(r"\b(?:commit|commits|changes|recent changes)\b", normalized):
+            lines = ["I synced GitHub. Here are recent commits I can see:"]
+            count = 0
+            for repo in repos[:6]:
+                for commit in repo.get("commits") or []:
+                    count += 1
+                    lines.append(f"{count}. {repo.get('full_name')}: {commit.get('message') or 'Commit'} ({commit.get('sha')})")
+                    if count >= 10:
+                        return "\n".join(lines)
+            return "\n".join(lines) if count else "I synced GitHub, but I could not see recent commits in the visible repositories."
+
+        if re.search(r"\b(?:issue|issues)\b", normalized):
+            lines = ["I synced GitHub. Here are open issues I can see:"]
+            count = 0
+            for repo in repos[:6]:
+                for issue in repo.get("issues") or []:
+                    count += 1
+                    lines.append(f"{count}. {repo.get('full_name')} #{issue.get('number')}: {issue.get('title')}")
+                    if count >= 10:
+                        return "\n".join(lines)
+            return "\n".join(lines) if count else "I synced GitHub. I did not find open issues in the visible repositories."
+
+        if re.search(r"\b(?:pull request|pull requests|pr|prs)\b", normalized):
+            lines = ["I synced GitHub. Here are open pull requests I can see:"]
+            count = 0
+            for repo in repos[:6]:
+                for pull_request in repo.get("pull_requests") or []:
+                    count += 1
+                    lines.append(f"{count}. {repo.get('full_name')} #{pull_request.get('number')}: {pull_request.get('title')}")
+                    if count >= 10:
+                        return "\n".join(lines)
+            return "\n".join(lines) if count else "I synced GitHub. I did not find open pull requests in the visible repositories."
+
+        if re.search(r"\b(?:readme|explain|summarize|summary|codebase|repository|repo)\b", normalized) and query and matched_repos:
+            repo = matched_repos[0]
+            lines = [
+                f"I synced GitHub and found {repo.get('full_name')}.",
+                f"Description: {repo.get('description') or 'No description provided.'}",
+                f"Primary language: {repo.get('language') or 'Not specified'}",
+            ]
+            if repo.get("readme"):
+                lines.extend(["", "README preview:", repo.get("readme")[:900]])
+            commits = repo.get("commits") or []
+            if commits:
+                lines.extend(["", "Recent commits:"])
+                lines.extend(f"- {commit.get('message') or 'Commit'}" for commit in commits[:5])
+            return "\n".join(lines)
+
+        lines = [f"I synced GitHub for {metadata.get('login') or metadata.get('account_email') or 'your account'}. These repositories are visible:"]
+        for index, repo in enumerate(items[:10], start=1):
+            privacy = "private" if repo.get("private") else "public"
+            language = f" - {repo.get('language')}" if repo.get("language") else ""
+            lines.append(f"{index}. {repo.get('full_name') or repo.get('name')} ({privacy}){language}")
+        return "\n".join(lines)
+
+    def _github_query(self, message: str) -> str | None:
+        cleaned = re.sub(r"\b(?:github|git hub|my|repository|repositories|repo|repos|commit|commits|issue|issues|pull|request|requests|prs|readme|codebase|read|find|search|show|list|summarize|summary|explain|use|check|sync|what|are|is|connected|to|from|in|account|ceaser)\b", " ", message, flags=re.I)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?!:\"'")
+        return cleaned if len(cleaned) >= 3 else None
+
+    def _match_github_repos(self, items: list[dict], query: str) -> list[dict]:
+        needle = query.lower()
+        matches = []
+        for item in items:
+            haystack = " ".join(
+                [
+                    str(item.get("name") or ""),
+                    str(item.get("full_name") or ""),
+                    str(item.get("description") or ""),
+                    str(item.get("language") or ""),
+                    str(item.get("readme") or ""),
+                ]
+            ).lower()
+            if needle in haystack:
+                matches.append(item)
+        return matches
 
     def _format_notion_response(self, *, message: str, normalized: str, metadata: dict, items: list[dict]) -> str:
         databases = [item for item in items if item.get("object") == "database"]
