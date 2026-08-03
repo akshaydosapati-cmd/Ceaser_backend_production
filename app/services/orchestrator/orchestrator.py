@@ -27,6 +27,8 @@ from app.services.project_service import ProjectService
 from app.services.orchestrator.user_context_resolver import UserContextResolver
 from app.services.workflows import WorkflowOrchestrator
 from app.services.integrations import IntegrationManager
+from app.services.integrations.integration_execution_engine import IntegrationExecutionEngine, IntegrationToolResult
+from app.services.integrations.integration_intent_resolver import IntegrationIntentResolver
 from app.intelligence.knowledge.context_builder import context_builder as intelligence_context_builder
 from app.intelligence.knowledge.engine import KnowledgeEngine
 from app.intelligence.knowledge.repository import KnowledgeRepository
@@ -968,6 +970,17 @@ class CeaserOrchestrator:
 
     def _maybe_integration_response(self, user_id: str, message: str) -> str | None:
         normalized = message.lower()
+        intent = IntegrationIntentResolver().resolve(message)
+        if intent:
+            result = IntegrationExecutionEngine(self.db).execute(
+                user_id=user_id,
+                provider=intent.provider,
+                capability=intent.capability,
+                arguments=intent.entities,
+                request_id=None,
+            )
+            return self._format_integration_tool_result(result)
+
         provider_id = None
         label = None
         # Integrations are opt-in.  A normal question, including a contextual
@@ -1022,6 +1035,143 @@ class CeaserOrchestrator:
             )
             detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
             lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
+        return "\n".join(lines)
+
+    def _format_integration_tool_result(self, result: IntegrationToolResult) -> str:
+        if result.status == "not_connected":
+            label = "GitHub" if result.provider == "github" else "Notion" if result.provider == "notion" else result.provider.title()
+            return f"{label} is not connected yet. Connect it from Integrations, then I can read it."
+        if result.status != "completed":
+            return result.summary or "I could not complete that integration action right now."
+
+        data = result.data
+        if result.capability == "github.list_repositories":
+            repos = data.get("repositories") or []
+            if not repos:
+                return "I checked your connected GitHub account, but I could not see any repositories."
+            lines = ["I checked your connected GitHub account. These repositories are visible:"]
+            lines.extend(self._github_repo_line(index, repo) for index, repo in enumerate(repos[:12], start=1))
+            return "\n".join(lines)
+
+        if result.capability == "github.resolve_repository":
+            repos = data.get("repositories") or []
+            query = data.get("query") or "your search"
+            if not repos:
+                return f"I searched your connected GitHub repositories for \"{query}\", but I could not find a matching visible repository."
+            lines = [f"I searched your connected GitHub repositories for \"{query}\" and found:"]
+            lines.extend(self._github_repo_line(index, repo) for index, repo in enumerate(repos[:8], start=1))
+            return "\n".join(lines)
+
+        if result.capability == "github.summarize_repositories":
+            return self._summarize_github_repositories(metadata={}, items=data.get("repositories") or [])
+
+        if result.capability == "github.get_readme":
+            repo = data.get("repository") or {}
+            readme = data.get("readme") or ""
+            if not readme:
+                return f"I found {repo.get('full_name') or repo.get('name')}, but I could not read a README from the visible repository data."
+            return "\n".join([f"I found {repo.get('full_name') or repo.get('name')} and read its README:", "", readme[:1200]])
+
+        if result.capability == "github.list_commits":
+            repo = data.get("repository") or {}
+            commits = data.get("commits") or []
+            if not commits:
+                return f"I found {repo.get('full_name') or repo.get('name')}, but I could not see recent commits."
+            lines = [f"Recent commits for {repo.get('full_name') or repo.get('name')}:"]
+            lines.extend(f"{index}. {commit.get('message') or 'Commit'} ({commit.get('sha')})" for index, commit in enumerate(commits[:10], start=1))
+            return "\n".join(lines)
+
+        if result.capability == "github.list_issues":
+            repo = data.get("repository") or {}
+            issues = data.get("issues") or []
+            if not issues:
+                return f"I found {repo.get('full_name') or repo.get('name')}. There are no open issues visible to this connection."
+            lines = [f"Open issues for {repo.get('full_name') or repo.get('name')}:"]
+            lines.extend(f"{index}. #{issue.get('number')}: {issue.get('title')}" for index, issue in enumerate(issues[:10], start=1))
+            return "\n".join(lines)
+
+        if result.capability == "github.list_pull_requests":
+            repo = data.get("repository") or {}
+            pull_requests = data.get("pull_requests") or []
+            if not pull_requests:
+                return f"I found {repo.get('full_name') or repo.get('name')}. There are no open pull requests visible to this connection."
+            lines = [f"Open pull requests for {repo.get('full_name') or repo.get('name')}:"]
+            lines.extend(f"{index}. #{pr.get('number')}: {pr.get('title')}" for index, pr in enumerate(pull_requests[:10], start=1))
+            return "\n".join(lines)
+
+        if result.capability == "notion.list_pages":
+            pages = data.get("pages") or []
+            if not pages:
+                return "I checked Notion, but I could not see matching pages."
+            lines = ["I checked Notion. These pages are visible:"]
+            lines.extend(f"{index}. {page.get('title') or 'Untitled'}" for index, page in enumerate(pages[:12], start=1))
+            return "\n".join(lines)
+
+        if result.capability == "notion.list_databases":
+            databases = data.get("databases") or []
+            if not databases:
+                return "I checked Notion, but I could not see matching databases."
+            lines = ["I checked Notion. These databases are visible:"]
+            lines.extend(f"{index}. {db.get('title') or 'Untitled'}" for index, db in enumerate(databases[:12], start=1))
+            return "\n".join(lines)
+
+        if result.capability == "notion.list_tasks":
+            return self._format_notion_task_tool_result(data)
+
+        if result.capability == "notion.summarize_workspace":
+            return self._format_notion_workspace_tool_result(data)
+
+        return result.summary or "Integration action completed."
+
+    def _github_repo_line(self, index: int, repo: dict) -> str:
+        privacy = "private" if repo.get("private") else "public"
+        language = f" - {repo.get('language')}" if repo.get("language") else ""
+        description = f" - {repo.get('description')}" if repo.get("description") else ""
+        return f"{index}. {repo.get('full_name') or repo.get('name')} ({privacy}){language}{description}"
+
+    def _format_notion_task_tool_result(self, data: dict) -> str:
+        tasks = data.get("tasks") or []
+        if not tasks:
+            return "I checked Notion, but I could not see task rows. Make sure the Tasks database is shared with CEASER."
+        lines = ["I checked Notion Tasks. These task assignments are visible:"]
+        for index, task in enumerate(tasks[:12], start=1):
+            props = task.get("properties") if isinstance(task.get("properties"), dict) else {}
+            assignees = self._notion_people_value(props)
+            status = self._notion_named_value(props, ("status", "state", "stage", "progress"))
+            due = self._notion_named_value(props, ("due", "deadline", "date", "target"))
+            parts = [str(task.get("title") or "Untitled task")]
+            parts.append(f"assigned to {assignees}" if assignees else "unassigned")
+            if status:
+                parts.append(f"status: {status}")
+            if due:
+                parts.append(f"due: {due}")
+            if task.get("database"):
+                parts.append(f"database: {task.get('database')}")
+            lines.append(f"{index}. " + " - ".join(parts))
+        users = data.get("users") or []
+        if users:
+            lines.extend(["", "Workspace members visible:"])
+            lines.extend(f"- {user.get('name') or 'Unnamed user'}{f' - {user.get('email')}' if user.get('email') else ''}" for user in users[:8])
+        return "\n".join(lines)
+
+    def _format_notion_workspace_tool_result(self, data: dict) -> str:
+        pages = data.get("pages") or []
+        databases = data.get("databases") or []
+        users = data.get("users") or []
+        lines = [
+            "I checked your Notion workspace and summarized the visible structure.",
+            "",
+            f"Connected workspace: {data.get('workspace') or 'Notion workspace'}",
+            f"Visible databases: {len(databases)}",
+            f"Visible pages: {len(pages)}",
+            f"Visible members: {len(users)}",
+        ]
+        if databases:
+            lines.extend(["", "Main databases:"])
+            lines.extend(f"- {item.get('title') or 'Untitled'}" for item in databases[:8])
+        if pages:
+            lines.extend(["", "Recent pages:"])
+            lines.extend(f"- {item.get('title') or 'Untitled'}" for item in pages[:8])
         return "\n".join(lines)
 
     def _format_github_response(self, *, message: str, normalized: str, metadata: dict, items: list[dict]) -> str:

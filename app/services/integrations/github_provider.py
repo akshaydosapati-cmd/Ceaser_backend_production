@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import logging
+import re
 from urllib.parse import urlencode
 
 import httpx
@@ -146,6 +147,54 @@ class GitHubProvider(BaseIntegrationProvider):
             "permissions": self.permissions,
         }
 
+    def list_repositories(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+        headers = self._api_headers(integration.access_token)
+        with httpx.Client(timeout=16) as client:
+            response = client.get(
+                f"{self.api_base_url}/user/repos",
+                headers=headers,
+                params={"sort": "updated", "direction": "desc", "per_page": 30, "affiliation": "owner,collaborator,organization_member"},
+            )
+            response.raise_for_status()
+            repos = [self._compact_repo(repo) for repo in response.json()]
+        if repository_query:
+            repos = self._filter_repositories(repos, repository_query)
+        return {"repositories": repos, "query": repository_query or ""}
+
+    def resolve_repository(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+        return self.list_repositories(integration, repository_query=repository_query)
+
+    def summarize_repositories(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+        return self.list_repositories(integration, repository_query=repository_query)
+
+    def get_readme(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+        repo = self._resolve_repository(integration, repository_query)
+        headers = self._api_headers(integration.access_token)
+        with httpx.Client(timeout=16) as client:
+            readme = self._readme_excerpt(client, headers, repo.get("full_name"))
+        return {"repository": repo, "readme": readme}
+
+    def list_commits(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+        repo = self._resolve_repository(integration, repository_query)
+        headers = self._api_headers(integration.access_token)
+        with httpx.Client(timeout=16) as client:
+            commits = self._recent_items(client, headers, repo.get("full_name"), "commits")
+        return {"repository": repo, "commits": commits}
+
+    def list_issues(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+        repo = self._resolve_repository(integration, repository_query)
+        headers = self._api_headers(integration.access_token)
+        with httpx.Client(timeout=16) as client:
+            issues = self._recent_items(client, headers, repo.get("full_name"), "issues", params={"state": "open"})
+        return {"repository": repo, "issues": issues}
+
+    def list_pull_requests(self, integration: Integration, repository_query: str | None = None, **_: object) -> dict:
+        repo = self._resolve_repository(integration, repository_query)
+        headers = self._api_headers(integration.access_token)
+        with httpx.Client(timeout=16) as client:
+            pull_requests = self._recent_items(client, headers, repo.get("full_name"), "pulls", params={"state": "open"})
+        return {"repository": repo, "pull_requests": pull_requests}
+
     def _repo_item(self, client: httpx.Client, headers: dict[str, str], repo: dict) -> dict:
         full_name = repo.get("full_name")
         return {
@@ -163,6 +212,43 @@ class GitHubProvider(BaseIntegrationProvider):
             "issues": self._recent_items(client, headers, full_name, "issues", params={"state": "open"}),
             "pull_requests": self._recent_items(client, headers, full_name, "pulls", params={"state": "open"}),
         }
+
+    def _compact_repo(self, repo: dict) -> dict:
+        return {
+            "id": repo.get("id"),
+            "name": repo.get("name"),
+            "full_name": repo.get("full_name"),
+            "private": repo.get("private"),
+            "description": repo.get("description"),
+            "language": repo.get("language"),
+            "default_branch": repo.get("default_branch"),
+            "updated_at": repo.get("updated_at"),
+            "url": repo.get("html_url"),
+        }
+
+    def _resolve_repository(self, integration: Integration, repository_query: str | None) -> dict:
+        repositories = self.list_repositories(integration, repository_query=repository_query).get("repositories") or []
+        if not repositories:
+            raise ValueError("No matching visible repository found.")
+        return repositories[0]
+
+    def _filter_repositories(self, repositories: list[dict], query: str) -> list[dict]:
+        needle = query.lower()
+        compact_needle = "".join(ch for ch in needle if ch.isalnum())
+        tokens = [token for token in re.findall(r"[a-z0-9]+", needle) if len(token) >= 3]
+        scored: list[tuple[int, dict]] = []
+        for repo in repositories:
+            haystack = " ".join(str(repo.get(key) or "") for key in ("name", "full_name", "description", "language")).lower()
+            compact_haystack = "".join(ch for ch in haystack if ch.isalnum())
+            score = 0
+            if needle and needle in haystack:
+                score += 10
+            if compact_needle and compact_needle in compact_haystack:
+                score += 10
+            score += sum(3 for token in tokens if token in haystack or token in compact_haystack)
+            if score:
+                scored.append((score, repo))
+        return [repo for _, repo in sorted(scored, key=lambda item: item[0], reverse=True)]
 
     def _readme_excerpt(self, client: httpx.Client, headers: dict[str, str], full_name: str | None) -> str:
         if not full_name:

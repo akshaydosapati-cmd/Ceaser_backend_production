@@ -90,6 +90,72 @@ class NotionProvider(BaseIntegrationProvider):
             "permissions": self.permissions,
         }
 
+    def list_pages(self, integration, query: str | None = None, **_: object) -> dict:
+        metadata = self._cached_or_live_metadata(integration)
+        pages = [item for item in metadata.get("items") or [] if item.get("object") == "page"]
+        if query:
+            pages = self._filter_items(pages, query)
+        return {"workspace": metadata.get("workspace_name"), "pages": pages, "query": query or ""}
+
+    def search_pages(self, integration, query: str | None = None, **_: object) -> dict:
+        return self.list_pages(integration, query=query)
+
+    def list_databases(self, integration, query: str | None = None, **_: object) -> dict:
+        metadata = self._cached_or_live_metadata(integration)
+        databases = [item for item in metadata.get("items") or [] if item.get("object") == "database"]
+        if query:
+            databases = self._filter_items(databases, query)
+        return {"workspace": metadata.get("workspace_name"), "databases": databases, "query": query or ""}
+
+    def summarize_workspace(self, integration, **_: object) -> dict:
+        metadata = self._cached_or_live_metadata(integration)
+        items = metadata.get("items") or []
+        return {
+            "workspace": metadata.get("workspace_name"),
+            "pages": [item for item in items if item.get("object") == "page"],
+            "databases": [item for item in items if item.get("object") == "database"],
+            "users": metadata.get("users") or [],
+        }
+
+    def list_tasks(self, integration, query: str | None = None, **_: object) -> dict:
+        metadata = self._cached_or_live_metadata(integration)
+        tasks = []
+        for database in metadata.get("items") or []:
+            if database.get("object") != "database":
+                continue
+            if "task" not in str(database.get("title") or "").lower() and "todo" not in str(database.get("title") or "").lower():
+                continue
+            for row in database.get("rows") or []:
+                if isinstance(row, dict):
+                    tasks.append(row)
+        if not tasks:
+            metadata = self.get_metadata(integration)
+            for database in metadata.get("items") or []:
+                if database.get("object") != "database":
+                    continue
+                if "task" not in str(database.get("title") or "").lower() and "todo" not in str(database.get("title") or "").lower():
+                    continue
+                for row in database.get("rows") or []:
+                    if isinstance(row, dict):
+                        tasks.append(row)
+        if query:
+            tasks = self._filter_items(tasks, query)
+        return {"workspace": metadata.get("workspace_name"), "tasks": tasks, "users": metadata.get("users") or [], "query": query or ""}
+
+    def _cached_or_live_metadata(self, integration) -> dict:
+        cached = (integration.metadata_json or {}).get("last_metadata")
+        if isinstance(cached, dict):
+            return cached
+        return self.get_metadata(integration)
+
+    def _filter_items(self, items: list[dict], query: str) -> list[dict]:
+        needle = query.lower()
+        return [
+            item
+            for item in items
+            if needle in " ".join([str(item.get("title") or ""), str(item.get("excerpt") or ""), str(item.get("properties") or "")]).lower()
+        ]
+
     def _exchange_token(self, body: dict) -> TokenPayload:
         credentials = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
         with httpx.Client(timeout=20) as client:
