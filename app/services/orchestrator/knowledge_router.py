@@ -40,11 +40,13 @@ class KnowledgeRouter:
             return RouteDecision(KnowledgeRoute.FILE, "user file or document request")
         if any(term in text for term in ("my calendar", "my meetings", "meetings do i have", "meetings today", "meeting today", "calendar today", "calendar tomorrow", "events today")):
             return RouteDecision(KnowledgeRoute.CALENDAR, "personal calendar request")
-        if any(term in text for term in ("my emails", "my email", "read gmail", "read my gmail", "my drive", "google drive", "my files in drive", "notion", "my notion", "notion page", "notion pages", "notion database", "notion databases", "notion workspace", "notion docs")):
+        if any(term in text for term in ("my emails", "my email", "read gmail", "read my gmail", "my drive", "google drive", "my files in drive", "notion", "my notion", "notion page", "notion pages", "notion database", "notion databases", "notion workspace", "notion docs", "notion members", "notion users", "workspace members", "workspace users")):
             return RouteDecision(KnowledgeRoute.INTEGRATION, "connected personal data request")
+        if "project" in text and any(term in text for term in ("member", "members", "team", "collaborator", "collaborators", "who is working", "who are working")):
+            return RouteDecision(KnowledgeRoute.MEMORY, "project membership request")
         if any(term in text for term in ("remember", "what do you know about me", "my preferences", "saved memory", "my memory", "my name is", "call me ")):
             return RouteDecision(KnowledgeRoute.MEMORY, "personal memory request")
-        if any(term in text for term in ("latest", "current", "today", "yesterday", "news", "live update", "recent", "this week", "this month", "this year", "stock price", "weather", "who won", "score", "web search", "internet", "sources", "citations", "competitor", "market research")):
+        if any(term in text for term in ("latest", "current", "today", "yesterday", "news", "live update", "recent", "this week", "this month", "this year", "stock price", "weather", "who won", "score", "stats", "statistics", "centuries", "records", "web search", "internet", "sources", "citations", "competitor", "market research")):
             return RouteDecision(KnowledgeRoute.RESEARCH, "fresh information request")
         if any(text.startswith(prefix) for prefix in ("open ", "launch ", "start ", "create folder ", "take screenshot", "read clipboard")):
             return RouteDecision(KnowledgeRoute.DESKTOP, "desktop command")

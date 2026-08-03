@@ -63,9 +63,13 @@ class NotionProvider(BaseIntegrationProvider):
                 json={"page_size": 10},
             )
             search_response.raise_for_status()
+            users_response = client.get(f"{self.api_base_url}/users", headers=headers, params={"page_size": 25})
+            users_response.raise_for_status()
             user_payload = user_response.json()
             search_payload = search_response.json()
+            users_payload = users_response.json()
             items = [self._search_item(client, headers, item) for item in search_payload.get("results", [])]
+            users = [self._user_item(item) for item in users_payload.get("results", [])]
 
         return {
             "provider": self.id,
@@ -81,6 +85,8 @@ class NotionProvider(BaseIntegrationProvider):
             },
             "items": items,
             "item_count": len(items),
+            "users": users,
+            "user_count": len(users),
             "permissions": self.permissions,
         }
 
@@ -167,6 +173,17 @@ class NotionProvider(BaseIntegrationProvider):
     def _database_properties(self, item: dict) -> list[str]:
         properties = item.get("properties") or {}
         return [name for name in properties.keys() if isinstance(name, str)][:12]
+
+    def _user_item(self, item: dict) -> dict:
+        person = item.get("person") if isinstance(item.get("person"), dict) else {}
+        bot = item.get("bot") if isinstance(item.get("bot"), dict) else {}
+        return {
+            "id": item.get("id"),
+            "name": item.get("name") or "Unnamed user",
+            "type": item.get("type"),
+            "email": person.get("email"),
+            "workspace_name": bot.get("workspace_name"),
+        }
 
     def _title_from_item(self, item: dict) -> str:
         if item.get("object") == "page":

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.agents.registry import AgentRegistry
 from app.engines.research_engine import ResearchEngine
 from app.models.conversation import Conversation, Message
+from app.models.project import Project, ProjectMember
 from app.models.user import User
 from app.repositories.file_repository import FileRepository
 from app.services.conversation_service import ConversationService
@@ -22,6 +23,7 @@ from app.services.orchestrator.memory_retriever import MemoryRetriever
 from app.services.orchestrator.knowledge_router import KnowledgeRoute, KnowledgeRouter
 from app.services.orchestrator.response_pipeline import ResponsePipeline
 from app.services.orchestrator.suggestion_engine import SuggestionEngine
+from app.services.project_service import ProjectService
 from app.services.orchestrator.user_context_resolver import UserContextResolver
 from app.services.workflows import WorkflowOrchestrator
 from app.services.integrations import IntegrationManager
@@ -130,6 +132,22 @@ class CeaserOrchestrator:
                 selected_agents=["Alex"],
                 workflow_type="integration_lookup",
                 summary="Integration lookup completed.",
+                request_id=request_id,
+                parent_message_id=parent_message_id,
+            )
+
+        project_members_response = self._maybe_project_members_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.MEMORY else None
+        if project_members_response:
+            return self._direct_response(
+                user_id=user_id,
+                conversation=conversation,
+                conversation_id=conversation_id,
+                conversation_context=conversation_context,
+                follow_up_trace=follow_up_trace,
+                response=project_members_response,
+                selected_agents=["Bolt"],
+                workflow_type="project_members_lookup",
+                summary="Project members lookup completed.",
                 request_id=request_id,
                 parent_message_id=parent_message_id,
             )
@@ -361,6 +379,23 @@ class CeaserOrchestrator:
                 "selected_agents": ["Alex"],
                 "workflow_type": "integration_lookup",
                 "summary": "Integration lookup completed.",
+                "request_id": request_id,
+                "parent_message_id": parent_message_id,
+            }
+
+        project_members_response = self._maybe_project_members_response(user_id=user_id, message=message) if route_decision.route is KnowledgeRoute.MEMORY else None
+        if project_members_response:
+            return {
+                "mode": "direct",
+                "user_id": user_id,
+                "conversation": conversation,
+                "conversation_id": conversation.id if conversation else conversation_id,
+                "conversation_context": conversation_context,
+                "follow_up_trace": follow_up_trace,
+                "response": project_members_response,
+                "selected_agents": ["Bolt"],
+                "workflow_type": "project_members_lookup",
+                "summary": "Project members lookup completed.",
                 "request_id": request_id,
                 "parent_message_id": parent_message_id,
             }
@@ -946,7 +981,7 @@ class CeaserOrchestrator:
             provider_id, label = "google-tasks", "Google Tasks"
         elif re.search(r"\b(?:show|list|read|find|check|sync)\b.{0,40}\b(?:google classroom|my assignments|my coursework)\b", normalized):
             provider_id, label = "google-classroom", "Google Classroom"
-        elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what)\b.{0,80}\b(?:notion|my notion|notion page|notion pages|notion database|notion databases|notion docs|notion workspace|workspace context|knowledge sources)\b", normalized):
+        elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what|who)\b.{0,90}\b(?:notion|my notion|notion page|notion pages|notion database|notion databases|notion docs|notion workspace|notion members|notion users|workspace members|workspace users|workspace context|knowledge sources)\b", normalized):
             provider_id, label = "notion", "Notion"
         if not provider_id:
             return None
@@ -984,8 +1019,20 @@ class CeaserOrchestrator:
     def _format_notion_response(self, *, message: str, normalized: str, metadata: dict, items: list[dict]) -> str:
         databases = [item for item in items if item.get("object") == "database"]
         pages = [item for item in items if item.get("object") == "page"]
+        users = metadata.get("users") or []
         query = self._notion_query(message)
         matched_items = self._match_notion_items(items, query) if query else []
+
+        if re.search(r"\b(?:member|members|user|users|people|person|team)\b", normalized):
+            if not users:
+                return "I synced Notion, but Notion did not return visible workspace members for this connection."
+            lines = ["I synced Notion. These workspace users are visible:"]
+            for index, user in enumerate(users[:15], start=1):
+                name = user.get("name") or "Unnamed user"
+                email = f" - {user.get('email')}" if user.get("email") else ""
+                user_type = f" ({user.get('type')})" if user.get("type") else ""
+                lines.append(f"{index}. {name}{email}{user_type}")
+            return "\n".join(lines)
 
         if re.search(r"\b(?:list|show|what|which)\b.{0,60}\b(?:database|databases)\b", normalized):
             if not databases:
@@ -1028,6 +1075,7 @@ class CeaserOrchestrator:
                 f"Visible items: {len(items)} recent items",
                 f"Databases: {len(databases)}",
                 f"Pages: {len(pages)}",
+                f"Workspace users visible: {len(users)}",
             ]
             if database_titles:
                 lines.extend(["", "Main databases I can see:"])
@@ -1085,6 +1133,53 @@ class CeaserOrchestrator:
             if needle in haystack:
                 matches.append(item)
         return matches
+
+    def _maybe_project_members_response(self, user_id: str, message: str) -> str | None:
+        normalized = message.lower()
+        if "project" not in normalized or not re.search(r"\b(member|members|team|collaborator|collaborators|who is working|who are working)\b", normalized):
+            return None
+
+        projects = self.db.query(Project).filter(Project.user_id == user_id).order_by(Project.created_at.desc()).all()
+        if not projects:
+            return "You do not have any CEASER projects yet. Create a project first, then I can show its members."
+
+        project = self._match_project_from_message(projects, message)
+        if not project:
+            names = ", ".join(item.name for item in projects[:8])
+            return f"Which project should I check? Your current projects are: {names}."
+
+        ProjectService(self.db)._ensure_owner_member(project)
+        self.db.commit()
+        members = (
+            self.db.query(ProjectMember)
+            .filter(ProjectMember.project_id == project.id, ProjectMember.status != "removed")
+            .order_by(ProjectMember.created_at.asc())
+            .all()
+        )
+        if not members:
+            return f"{project.name} does not have any listed members yet."
+
+        lines = [f"Here are the members in {project.name}:"]
+        for index, member in enumerate(members, start=1):
+            display = member.name or member.email
+            email = f" - {member.email}" if member.name else ""
+            lines.append(f"{index}. {display}{email} ({member.role}, {member.status})")
+        return "\n".join(lines)
+
+    def _match_project_from_message(self, projects: list[Project], message: str) -> Project | None:
+        normalized = message.lower()
+        for project in projects:
+            if project.name.lower() in normalized:
+                return project
+        cleaned = re.sub(r"\b(?:who|are|is|the|members?|team|collaborators?|in|of|my|project|check|show|list)\b", " ", normalized)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if cleaned:
+            for project in projects:
+                project_words = set(project.name.lower().split())
+                cleaned_words = set(cleaned.split())
+                if project_words and len(project_words & cleaned_words) / max(len(project_words), 1) >= 0.5:
+                    return project
+        return projects[0] if len(projects) == 1 else None
 
     def _is_explicit_google_calendar_request(self, message: str) -> bool:
         calendar_reference = bool(re.search(r"\b(?:google calendar|my calendar|calendar|calender)\b", message))
@@ -1495,6 +1590,7 @@ class CeaserOrchestrator:
             for term in [
                 "research", "latest", "news", "sources", "citations", "web", "internet", "online", "competitor", "market",
                 "current", "currently", "today", "recent", "as of", "this week", "this month", "this year", "live update",
+                "stats", "statistics", "centuries", "career stats", "records",
             ]
         )
         _ = selected_agents
@@ -1555,6 +1651,9 @@ class CeaserOrchestrator:
         if quoted_terms:
             return quoted_terms[0].strip()
 
+        if self._is_current_statistics_request(normalized):
+            return self._current_statistics_query(normalized)
+
         topic_patterns = [
             r"\bresearch\s+(?:on|about)?\s*(.+?)(?:\s+and\s+(?:give|show|share|list)|\s+then\s+(?:give|show|share|list)|$)",
             r"\bdo\s+(?:some\s+)?research\s+(?:on|about)?\s*(.+?)(?:\s+and\s+(?:give|show|share|list)|\s+then\s+(?:give|show|share|list)|$)",
@@ -1586,6 +1685,20 @@ class CeaserOrchestrator:
     def _clean_research_query(self, value: str) -> str:
         cleaned = re.sub(r"\b(a|an|the|and|then|me|please|resources|sources|links|citations|you|did|found|for|this|topic)\b", " ", value, flags=re.I)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?,")
+        return cleaned
+
+    def _is_current_statistics_request(self, message: str) -> bool:
+        normalized = message.lower()
+        has_freshness = any(term in normalized for term in ["current", "latest", "as of", "today", "updated", "recent"])
+        has_stats = any(term in normalized for term in ["stats", "statistics", "centuries", "runs", "records", "career"])
+        return has_freshness and has_stats
+
+    def _current_statistics_query(self, message: str) -> str:
+        cleaned = self._clean_research_query(message)
+        if not re.search(r"\b(?:2026|latest|current|updated)\b", cleaned, flags=re.I):
+            cleaned = f"{cleaned} latest 2026"
+        if not re.search(r"\b(?:official|espncricinfo|icc|stats)\b", cleaned, flags=re.I):
+            cleaned = f"{cleaned} official stats"
         return cleaned
 
     def _is_follow_up_research_request(self, message: str) -> bool:

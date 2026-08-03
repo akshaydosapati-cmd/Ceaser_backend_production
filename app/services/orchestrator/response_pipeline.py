@@ -91,6 +91,7 @@ class ResponsePipeline:
         freshness_rule = (
             "When live research is provided, treat its sources as the authority for present-day facts. "
             "Do not replace them with model memory; if no reliable live source exists, say so briefly rather than guessing. "
+            "For current statistics, scores, records, prices, weather, or news, never answer from stale model memory or say 'up to 2024'; either use the provided live sources or clearly say live data could not be verified. "
             if research else ""
         )
 

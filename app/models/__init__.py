@@ -24,7 +24,7 @@ from app.models.integration import Integration
 from app.models.knowledge import ContextRun, KnowledgeChunk, KnowledgeRetrievalLog, KnowledgeSource
 from app.models.memory import Memory
 from app.models.profile import Profile
-from app.models.project import Project
+from app.models.project import Project, ProjectMember
 from app.models.user import User
 from app.models.voice import VoiceSession, VoiceSettings
 from app.models.workflow import WorkflowRun, WorkflowStep
@@ -59,6 +59,7 @@ __all__ = [
     "PlanEntitlement",
     "Profile",
     "Project",
+    "ProjectMember",
     "StudentVerification",
     "Subscription",
     "UsageCounter",
