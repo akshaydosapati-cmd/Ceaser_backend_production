@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.registry import AgentRegistry
 from app.engines.research_engine import ResearchEngine
-from app.models.conversation import Conversation
+from app.models.conversation import Conversation, Message
 from app.models.user import User
 from app.repositories.file_repository import FileRepository
 from app.services.conversation_service import ConversationService
@@ -489,7 +489,33 @@ class CeaserOrchestrator:
             },
         }
 
-    def finalize_stream_response(self, prepared: dict[str, Any], final_response: str) -> dict[str, Any]:
+    def begin_stream_response(self, prepared: dict[str, Any]) -> Message | None:
+        """Create a durable assistant message before a long stream finishes."""
+        conversation = prepared.get("conversation")
+        if not conversation:
+            return None
+        return self.conversations.create_message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="",
+            metadata={
+                "streaming": True,
+                "request_id": prepared.get("request_id"),
+                "parent_message_id": prepared.get("parent_message_id"),
+            },
+            ingest_knowledge=False,
+        )
+
+    def persist_stream_response(self, assistant_message: Message | None, content: str) -> None:
+        """Checkpoint partial text so a browser refresh never loses a stream."""
+        if not assistant_message or not content:
+            return
+        assistant_message.content = content
+        self.db.add(assistant_message)
+        self.db.commit()
+        self.db.refresh(assistant_message)
+
+    def finalize_stream_response(self, prepared: dict[str, Any], final_response: str, assistant_message: Message | None = None) -> dict[str, Any]:
         if prepared["mode"] == "direct":
             return self._direct_response(
                 user_id=prepared["user_id"],
@@ -596,13 +622,16 @@ class CeaserOrchestrator:
         }
         conversation = prepared.get("conversation")
         if conversation:
-            assistant_message = self.conversations.create_message(
-                conversation_id=conversation.id,
-                role="assistant",
-                content=final_response,
-                metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
-                ingest_knowledge=False,
-            )
+            if assistant_message is None:
+                assistant_message = self.conversations.create_message(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=final_response,
+                    metadata={key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
+                    ingest_knowledge=False,
+                )
+            else:
+                assistant_message.content = final_response
             bound = self._bind_suggestions(
                 suggestions=suggestions,
                 conversation_id=conversation.id,
@@ -612,6 +641,7 @@ class CeaserOrchestrator:
             response_payload["suggestions"] = [asdict(item) for item in bound]
             assistant_message.extra_metadata = {
                 **(assistant_message.extra_metadata or {}),
+                "streaming": False,
                 **{key: value for key, value in response_payload.items() if key not in {"conversation_id", "response"}},
             }
             self.db.add(assistant_message)

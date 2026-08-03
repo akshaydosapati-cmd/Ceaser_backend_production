@@ -214,12 +214,22 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             trace["llm_request_sent_ms"] = round((perf_counter() - started) * 1000, 2)
             logger.info("ceaser_latency request_id=%s llm_request_sent_ms=%s", request_id, trace["llm_request_sent_ms"])
             chunks: list[str] = []
+            assistant_message = None
+            persisted_length = 0
             async for chunk in orchestrator.response_pipeline.stream(
                 prepared["message"],
                 prepared["context"],
                 trace=trace,
             ):
                 chunks.append(chunk)
+                response_so_far = "".join(chunks)
+                if assistant_message is None:
+                    assistant_message = orchestrator.begin_stream_response(prepared)
+                # Persist the first visible text and regular checkpoints. This
+                # makes a refresh recover the response instead of only its prompt.
+                if assistant_message and (persisted_length == 0 or len(response_so_far) - persisted_length >= 360):
+                    orchestrator.persist_stream_response(assistant_message, response_so_far)
+                    persisted_length = len(response_so_far)
                 if not first_sse_token_logged:
                     trace["endpoint_ttft_ms"] = round((perf_counter() - started) * 1000, 2)
                     logger.info("ceaser_latency request_id=%s first_token_ms=%s", request_id, trace["endpoint_ttft_ms"])
@@ -234,7 +244,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             trace["output_tokens"] = max(1, round(len(response_text) / 4)) if response_text else 0
             trace["total_time_ms"] = round((perf_counter() - started) * 1000, 2)
             prepared["stream_trace"] = trace
-            response = orchestrator.finalize_stream_response(prepared, response_text)
+            response = orchestrator.finalize_stream_response(prepared, response_text, assistant_message=assistant_message)
             stage_marks["complete"] = perf_counter()
             logger.info(
                 "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s context_build_ms=%s routing_ms=%s tool_calls_ms=%s llm_request_sent_ms=%s first_token_ms=%s last_token_ms=%s",
