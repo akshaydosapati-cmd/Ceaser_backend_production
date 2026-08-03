@@ -985,7 +985,7 @@ class CeaserOrchestrator:
             provider_id, label = "notion", "Notion"
         elif (
             re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what|who)\b.{0,120}\b(?:github|git hub|repository|repositories|repo|repos|commit|commits|issue|issues|pull request|pull requests|prs|readme|codebase)\b", normalized)
-            or re.search(r"\b(?:commit|commits|issue|issues|pull request|pull requests|pr|prs|readme)\b.{0,120}\b(?:repository|repositories|repo|repos|project|projects|codebase|github|git hub|clinilocker|clini locker|ceaser)\b", normalized)
+            or re.search(r"\b(?:commit|commits|issue|issues|pull request|pull requests|pr|prs|readme)\b.{0,120}\b(?:repository|repositories|repo|repos|project|projects|codebase|github|git hub)\b", normalized)
             or re.search(r"\b(?:repository|repositories|repo|repos)\b.{0,80}\b(?:my account|connected account|visible|related)\b", normalized)
         ):
             provider_id, label = "github", "GitHub"
