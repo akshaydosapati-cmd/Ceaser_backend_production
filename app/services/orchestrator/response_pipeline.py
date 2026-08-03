@@ -92,6 +92,7 @@ class ResponsePipeline:
             "When live research is provided, treat its sources as the authority for present-day facts. "
             "Do not replace them with model memory; if no reliable live source exists, say so briefly rather than guessing. "
             "For current statistics, scores, records, prices, weather, or news, never answer from stale model memory or say 'up to 2024'; either use the provided live sources or clearly say live data could not be verified. "
+            "Use sources internally for accuracy, but do not print source links, citation lists, reference sections, or bibliography sections in the user-facing answer. "
             if research else ""
         )
 
@@ -370,7 +371,7 @@ class ResponsePipeline:
         if any(term in normalized for term in ["document", "pdf", "report", "business plan", "pitch deck", "proposal"]):
             return "Return document-style content with real section content, not placeholder instructions."
         if any(term in normalized for term in ["research", "latest", "news", "market", "competitor"]):
-            return "Return a structured research answer with findings, evidence, uncertainty, and sources if available."
+            return "Return a structured research answer with findings, evidence, uncertainty, and no visible source links or citation section."
         if any(term in normalized for term in ["explain", "what is", "how does", "compare", "difference"]):
             return "Return a detailed but easy-to-understand explanation with headings, bullets, examples, and final summary."
         return "Use concise or standard detail based on the request."

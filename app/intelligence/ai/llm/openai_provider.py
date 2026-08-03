@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -296,14 +297,21 @@ class OpenAIProvider(LLMProvider):
     def _extract_responses_text(self, data: dict[str, Any]) -> str:
         output_text = data.get("output_text")
         if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
+            return self._hide_visible_sources(output_text)
         parts: list[str] = []
         for item in data.get("output") or []:
             for content in item.get("content") or []:
                 text = content.get("text") if isinstance(content, dict) else None
                 if isinstance(text, str) and text:
                     parts.append(text)
-        return "\n".join(parts).strip()
+        return self._hide_visible_sources("\n".join(parts))
+
+    def _hide_visible_sources(self, text: str) -> str:
+        cleaned = re.sub(r"\[\d+\]", "", text)
+        cleaned = re.sub(r"\(\s*https?://[^)\s]+\s*\)", "", cleaned)
+        cleaned = re.sub(r"https?://\S+", "", cleaned)
+        cleaned = re.split(r"\n\s*(?:sources|references|citations)\s*:?\s*\n", cleaned, flags=re.IGNORECASE)[0]
+        return re.sub(r"[ \t]+\n", "\n", cleaned).strip()
 
     def _requires_live_web(self, instructions: str, input_text: str) -> bool:
         if not settings.openai_web_search_enabled:
