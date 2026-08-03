@@ -17,7 +17,6 @@ LAUNCH_DISABLED_PROVIDERS = {
     "google-drive",
     "google-tasks",
     "google-classroom",
-    "notion",
 }
 
 
