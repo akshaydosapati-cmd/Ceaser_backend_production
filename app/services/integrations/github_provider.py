@@ -50,6 +50,7 @@ class GitHubProvider(BaseIntegrationProvider):
             "scope": " ".join(self.scopes),
             "state": state,
             "allow_signup": "true",
+            "prompt": "select_account",
         }
         return f"{self.auth_url}?{urlencode(params)}"
 
