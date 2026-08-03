@@ -946,6 +946,8 @@ class CeaserOrchestrator:
             provider_id, label = "google-tasks", "Google Tasks"
         elif re.search(r"\b(?:show|list|read|find|check|sync)\b.{0,40}\b(?:google classroom|my assignments|my coursework)\b", normalized):
             provider_id, label = "google-classroom", "Google Classroom"
+        elif re.search(r"\b(?:show|list|read|find|check|sync|use|summarize|what)\b.{0,60}\b(?:notion|my notion|notion pages|notion workspace|workspace context|knowledge sources)\b", normalized):
+            provider_id, label = "notion", "Notion"
         if not provider_id:
             return None
 
@@ -973,6 +975,8 @@ class CeaserOrchestrator:
                 or "Untitled"
             )
             detail = item.get("from") or item.get("modified_time") or item.get("due") or item.get("status") or ""
+            if provider_id == "notion":
+                detail = item.get("object") or item.get("last_edited_time") or detail
             lines.append(f"{index}. {title}{f' - {detail}' if detail else ''}")
         return "\n".join(lines)
 
