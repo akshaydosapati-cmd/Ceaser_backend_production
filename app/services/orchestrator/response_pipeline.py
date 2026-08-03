@@ -40,8 +40,15 @@ class ResponsePipeline:
         """Reserve only the completion budget needed for the current request."""
         normalized = message.lower()
         selected = (context.get("merged_contributions", {}) or {}).get("selected_agents", []) if isinstance(context, dict) else []
+        # Workflow documents frequently contain many user-specified phases. A
+        # short completion cap cuts the answer off partway through the final
+        # phase, even though streaming itself completed successfully.
+        if any(term in normalized for term in ("workflow document", "workflow plan", "implementation plan")):
+            return 2400
+        if any(term in normalized for term in ("stopped in the middle", "response stopped", "cut off", "finish the response", "complete the response")):
+            return 900
         if "Friday" in selected or any(term in normalized for term in ("report", "document", "project plan", "workflow", "proposal")):
-            return 1100
+            return 1600
         if any(term in normalized for term in ("in depth", "detailed", "more details", "go deeper", "elaborate", "comprehensive", "implementation details", "complete explanation")):
             return 950
         greetings = {"hello", "hi", "hey", "hello ceaser", "hi ceaser", "thanks", "thank you"}

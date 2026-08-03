@@ -1217,7 +1217,9 @@ class CeaserOrchestrator:
             # This list is chronological.  Keep overwriting so the context holds
             # the actual most recent turn rather than the oldest retained turn.
             if item.role == "assistant":
-                latest_assistant_message = {"id": item.id, "content": item.content[:2200]}
+                # Continuations need the *end* of the previous response most:
+                # it is where a long streamed answer may have stopped.
+                latest_assistant_message = {"id": item.id, "content": item.content[-2400:]}
             if item.role == "user":
                 latest_user_message = {"id": item.id, "content": item.content[:1200]}
             compact_messages.append(
@@ -1325,7 +1327,7 @@ class CeaserOrchestrator:
         if previous_user:
             compact.append({"role": "user", "content": previous_user[:1200]})
         if previous_assistant:
-            compact.append({"role": "assistant", "content": previous_assistant[:2200]})
+            compact.append({"role": "assistant", "content": previous_assistant[-2400:]})
         return compact or list(conversation_context.get("messages") or [])[-2:]
 
     def _maybe_research(self, query: str, selected_agent_names: list[str]):
@@ -1577,7 +1579,7 @@ class CeaserOrchestrator:
         explicit_subtopic = self._extract_subtopic_request(message, prior_topic)
         explicit_topic = self._extract_explicit_topic(message)
         follow_up_patterns = {
-            "continue": r"^(continue|go on|keep going|carry on|what else)(?:\s+please)?$|\bcontinue (?:from|with)\b",
+            "continue": r"^(continue|go on|keep going|carry on|what else)(?:\s+please)?$|\bcontinue (?:from|with)\b|\b(?:response|answer|generation|it)\s+(?:stopped|was cut off|cut off|ended)\b|\b(?:finish|complete)\s+(?:it|the response|the answer)\b",
             "simplify": r"\b(explain|say|put).{0,20}\b(simple|simpler|plain)\b|\bin simple words\b|\bbriefly\b|\bshort version\b",
             "summarize": r"\b(summarize|summary|recap|tl;dr)\b",
             "examples": r"\b(example|examples|illustrate|use case|use cases)\b",
@@ -1586,6 +1588,10 @@ class CeaserOrchestrator:
             "expand": r"\b(?:explain(?: me)?|tell me|give me|go) (?:more|further|deeper|depth|detail|in depth|in detail|in detail please)\b|\b(elaborate|more details|more information|everything about)\b|^(more|details|depth|detail|in depth|in detail)$",
         }
         intent = next((name for name, pattern in follow_up_patterns.items() if re.search(pattern, normalized)), None)
+        # A request to resume a cut-off answer is a continuation even though
+        # the generic topic extractor can turn its wording into a faux topic.
+        if intent == "continue":
+            explicit_topic = None
         pronoun_reference = bool(re.search(r"\b(this|that|it|them|they|him|her|the previous answer|above)\b", normalized))
         connector = bool(re.match(r"^(and|also|then|so)\b", normalized))
         is_short = len(normalized.split()) <= 7
