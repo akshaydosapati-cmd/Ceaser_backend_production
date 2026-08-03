@@ -198,15 +198,18 @@ class GitHubProvider(BaseIntegrationProvider):
     def _revoke_authorization(self, access_token: str) -> None:
         try:
             with httpx.Client(timeout=12) as client:
-                response = client.request(
-                    "DELETE",
-                    f"{self.api_base_url}/applications/{self.client_id}/grant",
-                    auth=(self.client_id or "", self.client_secret or ""),
-                    headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
-                    json={"access_token": access_token},
-                )
-                if response.status_code not in {204, 404, 422}:
-                    response.raise_for_status()
+                headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+                for endpoint in ("token", "grant"):
+                    response = client.request(
+                        "DELETE",
+                        f"{self.api_base_url}/applications/{self.client_id}/{endpoint}",
+                        auth=(self.client_id or "", self.client_secret or ""),
+                        headers=headers,
+                        json={"access_token": access_token},
+                    )
+                    logger.info("GitHub OAuth %s revoke status=%s", endpoint, response.status_code)
+                    if response.status_code not in {204, 404, 422}:
+                        response.raise_for_status()
         except Exception as exc:
             logger.warning("GitHub authorization revoke failed: %s", repr(exc))
 
