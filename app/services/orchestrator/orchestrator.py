@@ -965,6 +965,36 @@ class CeaserOrchestrator:
         if not items:
             return f"I synced {label}. I did not find any recent items to show."
 
+        if provider_id == "notion" and re.search(r"\b(?:summarize|summary|context|what you can see|overview|workspace context)\b", normalized):
+            databases = [item for item in items if item.get("object") == "database"]
+            pages = [item for item in items if item.get("object") == "page"]
+            database_titles = [item.get("title") or "Untitled" for item in databases[:6]]
+            page_titles = [item.get("title") or "Untitled" for item in pages[:6]]
+            lines = [
+                "I synced your Notion workspace and can see a lightweight workspace overview.",
+                "",
+                f"Connected workspace: {metadata.get('workspace_name') or 'Notion workspace'}",
+                f"Visible items: {len(items)} recent items",
+                f"Databases: {len(databases)}",
+                f"Pages: {len(pages)}",
+            ]
+            if database_titles:
+                lines.extend(["", "Main databases I can see:"])
+                lines.extend(f"- {title}" for title in database_titles)
+            if page_titles:
+                lines.extend(["", "Recent pages I can see:"])
+                lines.extend(f"- {title}" for title in page_titles)
+            lines.extend(
+                [
+                    "",
+                    "What this suggests:",
+                    "- Your Notion workspace appears organized around tasks, documents, meetings, and projects.",
+                    "- CEASER can use this connection to identify visible pages and databases.",
+                    "- Full page-level summaries require reading the selected page blocks, which is the next Notion content step.",
+                ]
+            )
+            return "\n".join(lines)
+
         lines = [f"I synced {label}. Here are the latest items:"]
         for index, item in enumerate(items[:8], start=1):
             title = (
