@@ -983,7 +983,7 @@ class CeaserOrchestrator:
             provider_id, label = "google-classroom", "Google Classroom"
         elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what|who)\b.{0,90}\b(?:notion|my notion|notion page|notion pages|notion database|notion databases|notion docs|notion workspace|notion members|notion users|workspace members|workspace users|workspace context|knowledge sources)\b", normalized):
             provider_id, label = "notion", "Notion"
-        elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what|who)\b.{0,100}\b(?:github|git hub|repository|repositories|repo|repos|commit|commits|issue|issues|pull request|pull requests|prs|readme|codebase)\b", normalized):
+        elif re.search(r"\b(?:show|list|read|find|search|check|sync|use|summarize|summary|explain|what|who)\b.{0,120}\b(?:github|git hub|repository|repositories|repo|repos|commit|commits|issue|issues|pull request|pull requests|prs|readme|codebase)\b", normalized) or re.search(r"\b(?:repository|repositories|repo|repos)\b.{0,80}\b(?:my account|connected account|visible|related)\b", normalized):
             provider_id, label = "github", "GitHub"
         if not provider_id:
             return None
@@ -1058,7 +1058,7 @@ class CeaserOrchestrator:
                         return "\n".join(lines)
             return "\n".join(lines) if count else "I synced GitHub. I did not find open pull requests in the visible repositories."
 
-        if re.search(r"\b(?:readme|explain|summarize|summary|codebase|repository|repo)\b", normalized) and query and matched_repos:
+        if re.search(r"\b(?:readme|explain|codebase|repository|repo)\b", normalized) and query and matched_repos:
             repo = matched_repos[0]
             lines = [
                 f"I synced GitHub and found {repo.get('full_name')}.",
@@ -1073,6 +1073,21 @@ class CeaserOrchestrator:
                 lines.extend(f"- {commit.get('message') or 'Commit'}" for commit in commits[:5])
             return "\n".join(lines)
 
+        if query and matched_repos:
+            lines = [f"I searched your connected GitHub repositories for \"{query}\" and found:"]
+            for index, repo in enumerate(matched_repos[:8], start=1):
+                privacy = "private" if repo.get("private") else "public"
+                language = f" - {repo.get('language')}" if repo.get("language") else ""
+                description = f" - {repo.get('description')}" if repo.get("description") else ""
+                lines.append(f"{index}. {repo.get('full_name') or repo.get('name')} ({privacy}){language}{description}")
+            return "\n".join(lines)
+
+        if query and not matched_repos:
+            return f"I searched your connected GitHub repositories for \"{query}\", but I could not find a matching visible repository."
+
+        if re.search(r"\b(?:summarize|summary|overview|working on|projects)\b", normalized):
+            return self._summarize_github_repositories(metadata=metadata, items=items)
+
         lines = [f"I synced GitHub for {metadata.get('login') or metadata.get('account_email') or 'your account'}. These repositories are visible:"]
         for index, repo in enumerate(items[:10], start=1):
             privacy = "private" if repo.get("private") else "public"
@@ -1081,13 +1096,15 @@ class CeaserOrchestrator:
         return "\n".join(lines)
 
     def _github_query(self, message: str) -> str | None:
-        cleaned = re.sub(r"\b(?:github|git hub|my|repository|repositories|repo|repos|commit|commits|issue|issues|pull|request|requests|prs|readme|codebase|read|find|search|show|list|summarize|summary|explain|use|check|sync|what|are|is|connected|to|from|in|account|ceaser)\b", " ", message, flags=re.I)
+        cleaned = re.sub(r"\b(?:github|git hub|my|repository|repositories|repo|repos|commit|commits|issue|issues|pull|request|requests|prs|readme|codebase|read|find|search|show|list|summarize|summary|explain|use|check|sync|what|are|is|connected|to|from|in|account|visible|related|about|called|named|project|projects)\b", " ", message, flags=re.I)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .?!:\"'")
         return cleaned if len(cleaned) >= 3 else None
 
     def _match_github_repos(self, items: list[dict], query: str) -> list[dict]:
         needle = query.lower()
-        matches = []
+        compact_needle = re.sub(r"[^a-z0-9]", "", needle)
+        query_tokens = [token for token in re.findall(r"[a-z0-9]+", needle) if len(token) >= 3]
+        scored: list[tuple[int, dict]] = []
         for item in items:
             haystack = " ".join(
                 [
@@ -1098,9 +1115,52 @@ class CeaserOrchestrator:
                     str(item.get("readme") or ""),
                 ]
             ).lower()
-            if needle in haystack:
-                matches.append(item)
-        return matches
+            compact_haystack = re.sub(r"[^a-z0-9]", "", haystack)
+            score = 0
+            if needle and needle in haystack:
+                score += 10
+            if compact_needle and compact_needle in compact_haystack:
+                score += 10
+            score += sum(3 for token in query_tokens if token in haystack or token in compact_haystack)
+            if score:
+                scored.append((score, item))
+        return [item for _, item in sorted(scored, key=lambda pair: pair[0], reverse=True)]
+
+    def _summarize_github_repositories(self, *, metadata: dict, items: list[dict]) -> str:
+        languages: dict[str, int] = {}
+        public_count = 0
+        private_count = 0
+        for repo in items:
+            if repo.get("private"):
+                private_count += 1
+            else:
+                public_count += 1
+            language = repo.get("language") or "Unspecified"
+            languages[language] = languages.get(language, 0) + 1
+        top_languages = ", ".join(f"{language} ({count})" for language, count in sorted(languages.items(), key=lambda item: item[1], reverse=True)[:5])
+        lines = [
+            f"I synced GitHub for {metadata.get('login') or metadata.get('account_email') or 'your account'} and summarized the visible repositories.",
+            "",
+            f"Visible repositories: {len(items)}",
+            f"Public: {public_count}",
+            f"Private: {private_count}",
+            f"Main languages: {top_languages or 'Not specified'}",
+            "",
+            "Repository highlights:",
+        ]
+        for repo in items[:8]:
+            detail = repo.get("description") or (repo.get("readme") or "").splitlines()[0:1]
+            if isinstance(detail, list):
+                detail = detail[0] if detail else ""
+            language = f" - {repo.get('language')}" if repo.get("language") else ""
+            lines.append(f"- {repo.get('full_name') or repo.get('name')}{language}: {detail or 'No summary text available from GitHub.'}")
+        lines.extend(
+            [
+                "",
+                "You can ask me to explain a specific repository, summarize its README, show commits, show open issues, or show open pull requests.",
+            ]
+        )
+        return "\n".join(lines)
 
     def _format_notion_response(self, *, message: str, normalized: str, metadata: dict, items: list[dict]) -> str:
         databases = [item for item in items if item.get("object") == "database"]
