@@ -1109,6 +1109,11 @@ class CeaserOrchestrator:
         query = self._notion_query(message)
         matched_items = self._match_notion_items(items, query) if query else []
 
+        if re.search(r"\b(?:task|tasks|taks|takses|todo|to-do|assigned|assignee|assignment|owner|owners)\b", normalized):
+            task_response = self._format_notion_tasks_response(items=items, users=users)
+            if task_response:
+                return task_response
+
         if re.search(r"\b(?:member|members|user|users|people|person|team)\b", normalized):
             if not users:
                 return "I synced Notion, but Notion did not return visible workspace members for this connection."
@@ -1219,6 +1224,94 @@ class CeaserOrchestrator:
             if needle in haystack:
                 matches.append(item)
         return matches
+
+    def _format_notion_tasks_response(self, *, items: list[dict], users: list[dict]) -> str | None:
+        task_databases = [
+            item
+            for item in items
+            if item.get("object") == "database"
+            and re.search(r"\b(?:task|tasks|todo|to-do|assignment|assignments)\b", str(item.get("title") or ""), re.I)
+        ]
+        rows = []
+        for database in task_databases:
+            for row in database.get("rows") or []:
+                if isinstance(row, dict):
+                    rows.append(row)
+        if not task_databases:
+            rows = [
+                row
+                for item in items
+                if item.get("object") == "database"
+                for row in (item.get("rows") or [])
+                if isinstance(row, dict) and self._looks_like_notion_task(row)
+            ]
+        if not rows and task_databases:
+            database = task_databases[0]
+            props = database.get("properties") or []
+            detail = f" Its visible properties are: {', '.join(props[:10])}." if props else ""
+            return f"I found your Notion Tasks database, but Notion did not return visible task rows for this connection.{detail}"
+        if not rows:
+            return "I synced Notion, but I could not see task rows in the visible workspace items. Make sure the Tasks database is shared with CEASER."
+
+        lines = ["I synced Notion Tasks. Here are the visible task assignments:"]
+        for index, row in enumerate(rows[:12], start=1):
+            props = row.get("properties") if isinstance(row.get("properties"), dict) else {}
+            assignees = self._notion_people_value(props)
+            status = self._notion_named_value(props, ("status", "state", "stage", "progress"))
+            due = self._notion_named_value(props, ("due", "deadline", "date", "target"))
+            parts = [str(row.get("title") or "Untitled task")]
+            if assignees:
+                parts.append(f"assigned to {assignees}")
+            else:
+                parts.append("unassigned")
+            if status:
+                parts.append(f"status: {status}")
+            if due:
+                parts.append(f"due: {due}")
+            database = row.get("database")
+            if database:
+                parts.append(f"database: {database}")
+            lines.append(f"{index}. " + " - ".join(parts))
+
+        if users:
+            lines.extend(["", "Workspace members visible to this connection:"])
+            for user in users[:8]:
+                email = f" - {user.get('email')}" if user.get("email") else ""
+                lines.append(f"- {user.get('name') or 'Unnamed user'}{email}")
+        return "\n".join(lines)
+
+    def _looks_like_notion_task(self, row: dict) -> bool:
+        props = row.get("properties") if isinstance(row.get("properties"), dict) else {}
+        haystack = " ".join([str(row.get("title") or ""), " ".join(props.keys())]).lower()
+        return any(term in haystack for term in ("task", "todo", "to-do", "status", "assignee", "assigned", "owner", "due", "deadline"))
+
+    def _notion_people_value(self, props: dict) -> str:
+        people = []
+        for name, value in props.items():
+            if not re.search(r"\b(?:assignee|assigned|owner|person|people|member|responsible)\b", name, re.I):
+                continue
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        label = item.get("name") or item.get("email")
+                        if label:
+                            people.append(str(label))
+                    elif isinstance(item, str):
+                        people.append(item)
+            elif isinstance(value, str):
+                people.append(value)
+        return ", ".join(dict.fromkeys(people))
+
+    def _notion_named_value(self, props: dict, names: tuple[str, ...]) -> str | None:
+        for name, value in props.items():
+            lowered = name.lower()
+            if any(token in lowered for token in names):
+                if isinstance(value, list):
+                    simple = [str(item.get("name") if isinstance(item, dict) else item) for item in value]
+                    return ", ".join(item for item in simple if item)
+                if isinstance(value, (str, int, float, bool)):
+                    return str(value)
+        return None
 
     def _maybe_project_members_response(self, user_id: str, message: str) -> str | None:
         normalized = message.lower()

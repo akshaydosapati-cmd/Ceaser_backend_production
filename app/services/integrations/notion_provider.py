@@ -132,7 +132,10 @@ class NotionProvider(BaseIntegrationProvider):
         if object_type == "page":
             summary = {"excerpt": self._page_excerpt(client, headers, item.get("id"))}
         elif object_type == "database":
-            summary = {"properties": self._database_properties(item)}
+            summary = {
+                "properties": self._database_properties(item),
+                "rows": self._database_rows(client, headers, item.get("id"), title),
+            }
         return {
             "id": item.get("id"),
             "object": object_type,
@@ -173,6 +176,81 @@ class NotionProvider(BaseIntegrationProvider):
     def _database_properties(self, item: dict) -> list[str]:
         properties = item.get("properties") or {}
         return [name for name in properties.keys() if isinstance(name, str)][:12]
+
+    def _database_rows(self, client: httpx.Client, headers: dict[str, str], database_id: str | None, database_title: str) -> list[dict]:
+        if not database_id:
+            return []
+        try:
+            response = client.post(
+                f"{self.api_base_url}/databases/{database_id}/query",
+                headers=headers,
+                json={"page_size": 12},
+            )
+            if response.status_code >= 400:
+                return []
+        except Exception:
+            return []
+        rows: list[dict] = []
+        for page in response.json().get("results", []):
+            properties = self._page_properties(page)
+            title = self._first_property(properties, ("title", "name", "task", "project")) or self._title_from_item(page)
+            rows.append(
+                {
+                    "id": page.get("id"),
+                    "title": title or "Untitled",
+                    "database": database_title,
+                    "url": page.get("url"),
+                    "last_edited_time": page.get("last_edited_time"),
+                    "properties": properties,
+                }
+            )
+        return rows
+
+    def _page_properties(self, page: dict) -> dict[str, object]:
+        properties = page.get("properties") or {}
+        values: dict[str, object] = {}
+        for name, payload in properties.items():
+            if not isinstance(name, str) or not isinstance(payload, dict):
+                continue
+            value = self._property_value(payload)
+            if value not in (None, "", [], {}):
+                values[name] = value
+        return values
+
+    def _property_value(self, payload: dict) -> object:
+        property_type = payload.get("type")
+        value = payload.get(property_type) if property_type else None
+        if property_type in {"title", "rich_text"} and isinstance(value, list):
+            return " ".join(part.get("plain_text", "") for part in value if isinstance(part, dict)).strip()
+        if property_type in {"select", "status"} and isinstance(value, dict):
+            return value.get("name")
+        if property_type == "multi_select" and isinstance(value, list):
+            return [item.get("name") for item in value if isinstance(item, dict) and item.get("name")]
+        if property_type == "people" and isinstance(value, list):
+            people = []
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                person = item.get("person") if isinstance(item.get("person"), dict) else {}
+                people.append({"name": item.get("name") or "Unnamed user", "email": person.get("email")})
+            return people
+        if property_type == "date" and isinstance(value, dict):
+            return value.get("start") or value.get("end")
+        if property_type in {"checkbox", "number", "email", "phone_number", "url"}:
+            return value
+        if property_type == "relation" and isinstance(value, list):
+            return [item.get("id") for item in value if isinstance(item, dict) and item.get("id")]
+        return None
+
+    def _first_property(self, properties: dict[str, object], names: tuple[str, ...]) -> str | None:
+        lower_names = {name.lower() for name in names}
+        for name, value in properties.items():
+            if name.lower() in lower_names and isinstance(value, str) and value.strip():
+                return value.strip()
+        for name, value in properties.items():
+            if any(token in name.lower() for token in lower_names) and isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
 
     def _user_item(self, item: dict) -> dict:
         person = item.get("person") if isinstance(item.get("person"), dict) else {}
