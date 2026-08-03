@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     github_client_secret: str | None = Field(default=None, alias="GITHUB_CLIENT_SECRET")
     github_private_key: str | None = Field(default=None, alias="GITHUB_PRIVATE_KEY")
     github_redirect_uri: str = Field(default="http://localhost:8000/integrations/github/callback", alias="GITHUB_REDIRECT_URI")
-    github_scopes_raw: str = Field(default="read:user,user:email", alias="GITHUB_SCOPES")
+    github_scopes_raw: str = Field(default="user:email", alias="GITHUB_SCOPES")
     microsoft_client_id: str | None = Field(default=None, alias="MICROSOFT_CLIENT_ID")
     microsoft_client_secret: str | None = Field(default=None, alias="MICROSOFT_CLIENT_SECRET")
     microsoft_oauth_redirect_uri: str = Field(default="http://localhost:8000/integrations/microsoft/callback", alias="MICROSOFT_OAUTH_REDIRECT_URI")
