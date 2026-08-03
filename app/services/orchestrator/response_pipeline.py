@@ -46,15 +46,17 @@ class ResponsePipeline:
         if any(term in normalized for term in ("workflow document", "workflow plan", "implementation plan")):
             return 2400
         if any(term in normalized for term in ("stopped in the middle", "response stopped", "cut off", "finish the response", "complete the response")):
-            return 900
+            return 1800
         if "Friday" in selected or any(term in normalized for term in ("report", "document", "project plan", "workflow", "proposal")):
             return 1600
         if any(term in normalized for term in ("in depth", "detailed", "more details", "go deeper", "elaborate", "comprehensive", "implementation details", "complete explanation")):
-            return 950
+            return 1800
+        if any(term in normalized for term in ("story", "plot", "movie", "film", "character", "summary", "explain", "tell me about", "what is", "who is")):
+            return 1400
         greetings = {"hello", "hi", "hey", "hello ceaser", "hi ceaser", "thanks", "thank you"}
         if normalized.strip(" .!?") in greetings:
             return 180
-        return 450
+        return 900
 
     def _build_prompt(self, *, message: str, context: dict) -> tuple[str, str]:
         current_request = str(context.get("latest_user_message") or message).strip()
