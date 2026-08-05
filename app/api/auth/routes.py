@@ -24,8 +24,10 @@ from app.schemas.auth import (
     PasswordVerificationRequest,
     RefreshSessionRequest,
 )
+from app.schemas.desktop_cloud import DesktopAuthorizeRequest, DesktopAuthorizeResponse, DesktopExchangeRequest, DesktopRefreshRequest, DesktopRevokeRequest, DesktopSessionResponse
 from app.schemas.user import UserRead
 from app.services.audit_service import AuditService
+from app.services.desktop_auth_service import DesktopAuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -145,6 +147,38 @@ async def refresh_session(payload: RefreshSessionRequest, db: Annotated[Session,
         refresh_token=supabase_response.get("refresh_token") or payload.refresh_token,
         user=UserRead.model_validate(user),
     )
+
+
+@router.post("/desktop/authorize", response_model=DesktopAuthorizeResponse)
+def authorize_desktop(
+    payload: DesktopAuthorizeRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    result = DesktopAuthService(db).authorize(user, payload)
+    AuditService(db).record(user_id=user.id, action="desktop_authorized", resource_type="desktop", resource_id=payload.device_id, metadata={"platform": payload.platform})
+    return result
+
+
+@router.post("/desktop/exchange", response_model=DesktopSessionResponse)
+def exchange_desktop(payload: DesktopExchangeRequest, db: Annotated[Session, Depends(get_db)]) -> dict:
+    return DesktopAuthService(db).exchange(payload)
+
+
+@router.post("/desktop/refresh", response_model=DesktopSessionResponse)
+def refresh_desktop(payload: DesktopRefreshRequest, db: Annotated[Session, Depends(get_db)]) -> dict:
+    return DesktopAuthService(db).refresh(payload.refresh_token, payload.device_id)
+
+
+@router.post("/desktop/revoke")
+def revoke_desktop(
+    payload: DesktopRevokeRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    DesktopAuthService(db).revoke(user, refresh_token=payload.refresh_token, device_id=payload.device_id)
+    AuditService(db).record(user_id=user.id, action="desktop_revoked", resource_type="desktop", resource_id=payload.device_id or user.id)
+    return {"status": "ok"}
 
 
 @router.post("/password/recover")

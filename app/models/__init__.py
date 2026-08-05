@@ -17,6 +17,7 @@ from app.models.commercial import (
     VerificationAttempt,
 )
 from app.models.conversation import Conversation, Message
+from app.models.desktop import DesktopAuthCode, DesktopCloudResource, DesktopDevice, DesktopRefreshSession
 from app.models.draft import Draft, DraftHistory
 from app.models.file import File
 from app.models.generated_document import AgentActivity, GeneratedDocument
@@ -41,6 +42,10 @@ __all__ = [
     "BillingInvoice",
     "BillingPayment",
     "Conversation",
+    "DesktopAuthCode",
+    "DesktopCloudResource",
+    "DesktopDevice",
+    "DesktopRefreshSession",
     "Draft",
     "DraftHistory",
     "File",

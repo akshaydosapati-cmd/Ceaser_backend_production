@@ -10,8 +10,10 @@ from app.core.config.settings import settings
 from app.core.database.session import get_db
 from app.core.security.supabase_auth import supabase_auth
 from app.models.user import User
+from app.models.desktop import DesktopDevice
 from app.repositories.user_repository import UserRepository
 from app.services.agent_service import AgentService
+from app.services.desktop_auth_service import verify_desktop_access_token
 
 
 _AUTH_CACHE_TTL_SECONDS = 300.0
@@ -61,6 +63,21 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
 
     token = authorization.split(" ", 1)[1]
+    desktop_payload = verify_desktop_access_token(token)
+    if desktop_payload:
+        user = db.get(User, desktop_payload.get("sub"))
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid desktop session")
+        device_id = desktop_payload.get("device_id")
+        if device_id:
+            device = db.query(DesktopDevice).filter(DesktopDevice.user_id == user.id, DesktopDevice.device_id == device_id).first()
+            if device and device.revoked_at:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop device revoked")
+        try:
+            ensure_dev_user_agents(db, user.id)
+            return user
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="CEASER account setup is temporarily unavailable.") from exc
     try:
         supabase_user = _cached_supabase_user(token)
         if supabase_user is None:
