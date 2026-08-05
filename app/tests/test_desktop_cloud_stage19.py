@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import re
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 
@@ -184,7 +186,7 @@ def test_cloud_resource_create_latest_search_read_update_delete_restore_download
     restored = client.post("/desktop/cloud/restore", json={"resource_id": resource_id}, headers=headers)
     assert restored.json()["resource"]["status"] == "active"
     download = client.post("/desktop/cloud/download", json={"resource_id": resource_id}, headers=headers)
-    assert "signed_download_url" in download.json()
+    assert download.status_code == 404
 
 
 def test_cross_user_resource_isolation():
@@ -209,3 +211,78 @@ def test_upload_validation_and_signed_upload_url():
     good = client.post("/desktop/cloud/upload", json={"name": "notes.pdf", "mime_type": "application/pdf", "size_bytes": 2000}, headers=headers)
     assert good.status_code == 200
     assert good.json()["signed_upload_url"]
+
+
+def test_real_signed_upload_and_download_bytes_round_trip():
+    session = create_desktop_session()
+    headers = {"Authorization": f"Bearer {session['access_token']}"}
+    content = b"%PDF-1.4\nCEASER desktop cloud upload test\n%%EOF"
+    expected_sha = hashlib.sha256(content).hexdigest()
+
+    init = client.post(
+        "/desktop/cloud/upload",
+        json={"name": "stage19.pdf", "mime_type": "application/pdf", "size_bytes": len(content)},
+        headers=headers,
+    )
+    assert init.status_code == 200, init.text
+    upload_url = init.json()["signed_upload_url"]
+    resource_id = init.json()["resource"]["id"]
+
+    uploaded = client.put(upload_url, content=content, headers={"Content-Type": "application/pdf"})
+    assert uploaded.status_code == 200, uploaded.text
+    uploaded_resource = uploaded.json()["resource"]
+    assert uploaded_resource["status"] == "active"
+    assert uploaded_resource["metadata"]["size_bytes"] == len(content)
+    assert uploaded_resource["metadata"]["sha256"] == expected_sha
+
+    listed = client.post("/desktop/cloud/search", json={"query": "stage19"}, headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["id"] == resource_id
+
+    prepared = client.post("/desktop/cloud/download", json={"resource_id": resource_id}, headers=headers)
+    assert prepared.status_code == 200, prepared.text
+    downloaded = client.get(prepared.json()["signed_download_url"])
+    assert downloaded.status_code == 200
+    assert downloaded.content == content
+    assert hashlib.sha256(downloaded.content).hexdigest() == expected_sha
+
+
+def test_signed_upload_rejects_expired_url_and_path_traversal():
+    session = create_desktop_session()
+    headers = {"Authorization": f"Bearer {session['access_token']}"}
+    traversal = client.post(
+        "/desktop/cloud/upload",
+        json={"name": "bad.pdf", "mime_type": "application/pdf", "size_bytes": 10, "storage_path": "../bad.pdf"},
+        headers=headers,
+    )
+    assert traversal.status_code == 400
+
+    init = client.post(
+        "/desktop/cloud/upload",
+        json={"name": "expires.pdf", "mime_type": "application/pdf", "size_bytes": 10},
+        headers=headers,
+    )
+    assert init.status_code == 200
+    expired_url = re.sub(r"expires=\d+", "expires=1", init.json()["signed_upload_url"])
+    expired = client.put(expired_url, content=b"expired")
+    assert expired.status_code == 401
+
+
+def test_signed_download_missing_file_returns_not_found():
+    session = create_desktop_session()
+    headers = {"Authorization": f"Bearer {session['access_token']}"}
+    created = client.post(
+        "/desktop/cloud/create",
+        json={
+            "name": "missing.pdf",
+            "resource_type": "file",
+            "mime_type": "application/pdf",
+            "storage_path": "local://users/missing/missing.pdf",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200
+    prepared = client.post("/desktop/cloud/download", json={"resource_id": created.json()["resource"]["id"]}, headers=headers)
+    assert prepared.status_code == 200
+    missing = client.get(prepared.json()["signed_download_url"])
+    assert missing.status_code == 404

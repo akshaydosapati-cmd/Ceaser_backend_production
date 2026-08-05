@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.database.session import get_db
@@ -71,6 +71,55 @@ def desktop_cloud_action(action: str, payload: DesktopCloudRequest, user: Annota
         metadata={"resource_type": payload.resource_type, "has_query": bool(payload.query)},
     )
     return result
+
+
+@router.put("/cloud/signed/{resource_id}")
+async def upload_signed_desktop_resource(
+    resource_id: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    purpose: str = Query(...),
+    expires: int = Query(...),
+    signature: str = Query(...),
+):
+    content = await request.body()
+    resource = DesktopCloudService(db).complete_signed_upload(resource_id, purpose, expires, signature, content)
+    AuditService(db).record(
+        user_id=resource.user_id,
+        action="desktop_cloud_upload_completed",
+        resource_type="desktop_cloud",
+        resource_id=resource.id,
+        metadata={"bytes": len(content), "mime_type": resource.mime_type},
+    )
+    return {"status": "completed", "verified": True, "resource": DesktopCloudService(db)._serialize(resource)}
+
+
+@router.get("/cloud/signed/{resource_id}")
+def download_signed_desktop_resource(
+    resource_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    purpose: str = Query(...),
+    expires: int = Query(...),
+    signature: str = Query(...),
+):
+    resource, content = DesktopCloudService(db).read_signed_download(resource_id, purpose, expires, signature)
+    AuditService(db).record(
+        user_id=resource.user_id,
+        action="desktop_cloud_download_completed",
+        resource_type="desktop_cloud",
+        resource_id=resource.id,
+        metadata={"bytes": len(content), "mime_type": resource.mime_type},
+    )
+    safe_name = str(resource.name or "download").replace('"', "")
+    return Response(
+        content=content,
+        media_type=resource.mime_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}"',
+            "X-CEASER-Resource-Id": resource.id,
+            "X-CEASER-Resource-Version": str(resource.version),
+        },
+    )
 
 
 def _device_read(device) -> dict:

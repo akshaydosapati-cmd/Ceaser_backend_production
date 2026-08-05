@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+from urllib.parse import urlencode
 from datetime import timedelta
 from typing import Any
 
@@ -15,6 +16,7 @@ from app.models.desktop import DesktopCloudResource
 from app.models.mixins import utc_now
 from app.models.user import User
 from app.schemas.desktop_cloud import DesktopCloudRequest
+from app.services.storage_service import StorageService
 
 
 ALLOWED_ACTIONS = {"list", "search", "latest", "read", "create", "update", "delete", "restore", "upload", "download"}
@@ -149,7 +151,47 @@ class DesktopCloudService:
 
     def _download(self, user: User, payload: DesktopCloudRequest) -> dict[str, Any]:
         resource = self._resolve_resource(user, payload)
+        if not resource.storage_path:
+            raise HTTPException(status_code=404, detail="The requested cloud resource has no stored file")
         return self._response("download", f"Prepared secure download for {resource.name}.", resource=resource, items=[resource], signed_download_url=self._signed_url("download", resource))
+
+    def complete_signed_upload(self, resource_id: str, purpose: str, expires: int, signature: str, content: bytes) -> DesktopCloudResource:
+        resource = self._verify_signed_resource(resource_id, purpose, expires, signature)
+        if purpose != "upload":
+            raise HTTPException(status_code=400, detail="Invalid signed upload purpose")
+        metadata = resource.metadata_json or {}
+        expected_size = int(metadata.get("size_bytes") or 0)
+        if len(content) > MAX_UPLOAD_BYTES or (expected_size and len(content) > expected_size):
+            raise HTTPException(status_code=413, detail="Uploaded file is larger than expected")
+        mime_type = resource.mime_type or "application/octet-stream"
+        if not self._mime_allowed(mime_type):
+            raise HTTPException(status_code=415, detail="File type is not supported")
+        checksum = hashlib.sha256(content).hexdigest()
+        storage_path = StorageService().store(
+            user_id=resource.user_id,
+            filename=resource.name,
+            content=content,
+            content_type=mime_type,
+        )
+        resource.storage_path = storage_path
+        resource.status = "active"
+        resource.updated_at = utc_now()
+        resource.metadata_json = {**metadata, "size_bytes": len(content), "sha256": checksum}
+        self.db.commit()
+        self.db.refresh(resource)
+        return resource
+
+    def read_signed_download(self, resource_id: str, purpose: str, expires: int, signature: str) -> tuple[DesktopCloudResource, bytes]:
+        resource = self._verify_signed_resource(resource_id, purpose, expires, signature)
+        if purpose != "download":
+            raise HTTPException(status_code=400, detail="Invalid signed download purpose")
+        if resource.deleted_at or resource.status == "deleted" or not resource.storage_path:
+            raise HTTPException(status_code=404, detail="CEASER cloud resource file not found")
+        try:
+            content = StorageService().read_bytes(resource.storage_path)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="CEASER cloud resource file is missing") from exc
+        return resource, content
 
     def _active_query(self, user: User):
         return self.db.query(DesktopCloudResource).filter(DesktopCloudResource.user_id == user.id, DesktopCloudResource.deleted_at.is_(None))
@@ -173,9 +215,12 @@ class DesktopCloudService:
         if payload.size_bytes is not None and payload.size_bytes > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="File is too large for desktop upload")
         mime = payload.mime_type or "application/octet-stream"
-        if not (mime.startswith(ALLOWED_MIME_PREFIXES) or mime in ALLOWED_MIME_TYPES):
+        if not self._mime_allowed(mime):
             raise HTTPException(status_code=415, detail="File type is not supported")
         self._safe_storage_path(payload.storage_path or "pending")
+
+    def _mime_allowed(self, mime: str) -> bool:
+        return mime.startswith(ALLOWED_MIME_PREFIXES) or mime in ALLOWED_MIME_TYPES
 
     def _safe_storage_path(self, value: str | None) -> str | None:
         if not value:
@@ -195,10 +240,26 @@ class DesktopCloudService:
 
     def _signed_url(self, purpose: str, resource: DesktopCloudResource) -> str:
         expires = int((utc_now() + timedelta(minutes=10)).timestamp())
-        secret = (settings.jwt_secret or settings.encryption_master_key or "ceaser").encode("utf-8")
-        body = f"{purpose}:{resource.user_id}:{resource.id}:{expires}"
-        signature = hmac.new(secret, body.encode("utf-8"), hashlib.sha256).hexdigest()
-        return f"/desktop/cloud/signed/{resource.id}?purpose={purpose}&expires={expires}&signature={signature}"
+        signature = self._signed_signature(purpose, resource.user_id, resource.id, expires)
+        return f"/desktop/cloud/signed/{resource.id}?{urlencode({'purpose': purpose, 'expires': expires, 'signature': signature})}"
+
+    def _signed_signature(self, purpose: str, user_id: str, resource_id: str, expires: int) -> str:
+        secret = (settings.jwt_secret or settings.encryption_master_key or "").encode("utf-8")
+        if not secret:
+            raise HTTPException(status_code=503, detail="Desktop cloud signing secret is not configured")
+        body = f"{purpose}:{user_id}:{resource_id}:{expires}"
+        return hmac.new(secret, body.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _verify_signed_resource(self, resource_id: str, purpose: str, expires: int, signature: str) -> DesktopCloudResource:
+        if expires < int(utc_now().timestamp()):
+            raise HTTPException(status_code=401, detail="Signed desktop cloud URL expired")
+        resource = self.db.get(DesktopCloudResource, resource_id)
+        if not resource:
+            raise HTTPException(status_code=404, detail="CEASER cloud resource not found")
+        expected = self._signed_signature(purpose, resource.user_id, resource.id, expires)
+        if not hmac.compare_digest(expected, signature or ""):
+            raise HTTPException(status_code=401, detail="Invalid signed desktop cloud URL")
+        return resource
 
     def _response(self, action: str, message: str, *, items: list[DesktopCloudResource] | None = None, resource: DesktopCloudResource | None = None, signed_upload_url: str | None = None, signed_download_url: str | None = None) -> dict[str, Any]:
         serialized_items = [self._serialize(item) for item in (items or [])]
