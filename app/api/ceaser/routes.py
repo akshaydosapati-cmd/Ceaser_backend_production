@@ -54,6 +54,9 @@ def ceaser_public_demo(payload: CeaserDemoRequest):
 @router.post("/chat", response_model=CeaserChatResponse)
 def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
     try:
+        desktop_fast = _maybe_desktop_fast_response(payload)
+        if desktop_fast is not None:
+            return desktop_fast
         response = CeaserOrchestrator(db).handle_message(
             user_id=user.id,
             message=payload.message,
@@ -72,6 +75,68 @@ def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_cu
         return response
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _maybe_desktop_fast_response(payload: CeaserChatRequest) -> dict | None:
+    if payload.source != "desktop_companion" or not payload.voice:
+        return None
+    if payload.conversation_id or payload.file_ids:
+        return None
+    message = (payload.original_message or payload.message or "").strip()
+    if not message:
+        return None
+    normalized = message.lower()
+    heavy_terms = (
+        "my ", "me ", "project", "file", "document", "pdf", "report", "memory",
+        "notion", "github", "calendar", "task", "email", "mail", "upload",
+        "delete", "restore", "rename", "latest", "connected", "workspace",
+        "summarize my", "what do i have", "what is my", "who am i",
+    )
+    current_terms = ("current", "latest", "today", "now", "news", "weather", "score", "price", "stock", "stats")
+    if any(term in normalized for term in heavy_terms + current_terms):
+        return None
+    started = perf_counter()
+    instructions = (
+        "You are CEASER Desktop Companion. Answer the user's voice question directly and quickly. "
+        "Keep the response concise, accurate, and useful for spoken playback. "
+        "Use short paragraphs or bullets only when helpful. "
+        "Do not mention backend, providers, sources, or implementation. "
+        "Maximum 180 words."
+    )
+    response = generate_text_sync(
+        instructions=instructions,
+        input_text=message,
+        temperature=0.35,
+        max_output_tokens=360,
+    ).strip()
+    elapsed_ms = round((perf_counter() - started) * 1000, 2)
+    logger.info(
+        "ceaser_desktop_fast_response request_id=%s elapsed_ms=%s input_chars=%s output_chars=%s",
+        payload.request_id,
+        elapsed_ms,
+        len(message),
+        len(response),
+    )
+    return {
+        "scope": "desktop_fast_ai",
+        "conversation_id": None,
+        "selected_agents": ["Ceaser"],
+        "contributions": [],
+        "contribution_summary": "Desktop fast response generated.",
+        "memories_used": [],
+        "research": None,
+        "workflow": None,
+        "context_summary": {
+            "retrieval_scope": "desktop_fast_ai",
+            "retrieval_sources": ["none"],
+            "retrieval_time_ms": 0,
+            "context_build_ms": 0,
+            "backend_fast_path_ms": elapsed_ms,
+            "cache_hit": True,
+        },
+        "suggestions": [],
+        "response": response,
+    }
 
 
 @router.post("/chat/background")

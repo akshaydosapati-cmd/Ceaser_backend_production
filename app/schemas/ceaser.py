@@ -10,6 +10,9 @@ class CeaserChatRequest(BaseModel):
     request_id: str | None = None
     parent_message_id: str | None = None
     file_ids: list[str] = Field(default_factory=list)
+    source: str | None = None
+    voice: bool = False
+    original_message: str | None = None
 
 
 class RankedMemory(BaseModel):
