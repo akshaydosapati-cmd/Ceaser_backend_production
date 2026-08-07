@@ -2211,7 +2211,11 @@ class CeaserOrchestrator:
             or self._topic_from_previous_assistant(latest_assistant_content)
             or self._topic_from_previous_user(latest_user_content)
             )
-        follow_up_detected = bool(resolution.get("follow_up_detected") and active_topic)
+        # Conversation continuity must not depend on a heuristic successfully
+        # naming the topic. A prior assistant/user exchange is sufficient for
+        # vague follow-ups such as "explain more" or "what about that".
+        prior_exchange_available = bool(latest_user_content or latest_assistant_content)
+        follow_up_detected = bool(resolution.get("follow_up_detected") and prior_exchange_available)
         resolved_entities = list(conversation_context.get("named_entities") or [])
         if active_topic and active_topic not in resolved_entities:
             resolved_entities.insert(0, active_topic)
@@ -2246,9 +2250,18 @@ class CeaserOrchestrator:
         prevents phrases such as "explain in depth" from becoming a request to
         explain the word "depth".
         """
-        normalized = re.sub(r"\s+", " ", message.lower()).strip(" .?!")
-        explicit_subtopic = self._extract_subtopic_request(message, prior_topic)
-        explicit_topic = self._extract_explicit_topic(message)
+        # Casual acknowledgements often prefix a continuation ("fine explain
+        # more"). Remove only those when the rest is clearly a follow-up, so
+        # they cannot be mistaken for a new topic.
+        turn_message = re.sub(
+            r"^(?:fine|okay|ok|alright|sure|yes|yeah|yep)[,!\s]+(?=(?:explain|tell|give|go|continue|more|details|why|how)\b)",
+            "",
+            message.strip(),
+            flags=re.I,
+        )
+        normalized = re.sub(r"\s+", " ", turn_message.lower()).strip(" .?!")
+        explicit_subtopic = self._extract_subtopic_request(turn_message, prior_topic)
+        explicit_topic = self._extract_explicit_topic(turn_message)
         follow_up_patterns = {
             "continue": r"^(continue|go on|keep going|carry on|what else)(?:\s+please)?$|\bcontinue (?:from|with)\b|\b(?:response|answer|generation|it)\s+(?:stopped|was cut off|cut off|ended)\b|\b(?:finish|complete)\s+(?:it|the response|the answer)\b",
             "simplify": r"\b(explain|say|put).{0,20}\b(simple|simpler|plain)\b|\bin simple words\b|\bbriefly\b|\bshort version\b",

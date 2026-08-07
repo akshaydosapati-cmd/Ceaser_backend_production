@@ -209,6 +209,39 @@ def test_orchestrator_extracts_generic_research_topics() -> None:
     assert orchestrator._research_query("look up federated data architectures in healthcare") == "federated data architectures in healthcare"
 
 
+def test_filler_prefixed_expand_request_continues_active_topic() -> None:
+    orchestrator = CeaserOrchestrator.__new__(CeaserOrchestrator)
+
+    resolution = orchestrator._resolve_conversation_turn("fine explain more", "Recent Assam floods")
+
+    assert resolution["follow_up_detected"] is True
+    assert resolution["new_topic"] is False
+    assert resolution["active_topic"] == "Recent Assam floods"
+    assert resolution["intent"] == "expand"
+
+
+def test_follow_up_uses_previous_exchange_when_topic_extraction_is_empty(monkeypatch) -> None:
+    orchestrator = CeaserOrchestrator.__new__(CeaserOrchestrator)
+    monkeypatch.setattr(orchestrator, "_topic_from_previous_assistant", lambda _content: None)
+    monkeypatch.setattr(orchestrator, "_topic_from_previous_user", lambda _content: None)
+    context = {
+        "previous_research": None,
+        "active_topic": None,
+        "active_subtopic": None,
+        "inferred_topic": None,
+        "latest_user_message": {"id": "user-1", "content": "Tell me about a subject."},
+        "latest_assistant_message": {"id": "assistant-1", "content": "A plain answer without a Markdown heading."},
+        "named_entities": [],
+        "summary": None,
+    }
+
+    trace = orchestrator._follow_up_trace(message="explain more", conversation_context=context, parent_message_id=None)
+
+    assert trace["follow_up_detected"] is True
+    assert trace["active_topic"] is None
+    assert trace["context_source"] == ["previous_user_message", "previous_assistant_answer"]
+
+
 def test_ceaser_chat_endpoint() -> None:
     response = client.post(
         "/ceaser/chat",
