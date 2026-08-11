@@ -216,6 +216,22 @@ def test_live_research_runs_only_without_internal_context() -> None:
     assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.FOLLOW_UP, has_internal_context=False) is False
 
 
+def test_generic_memory_match_does_not_block_live_research() -> None:
+    assert CeaserOrchestrator._has_relevant_internal_context(
+        message="Explain the main characters of Mahabharata",
+        knowledge_context={"evidence": ""},
+        memories=[{"content": "Explain this in simple words next time."}],
+    ) is False
+
+
+def test_relevant_user_memory_still_blocks_live_research() -> None:
+    assert CeaserOrchestrator._has_relevant_internal_context(
+        message="Summarize my CliniLocker project",
+        knowledge_context={"evidence": ""},
+        memories=[{"content": "CliniLocker project is a healthcare records platform."}],
+    ) is True
+
+
 def test_filler_prefixed_expand_request_continues_active_topic() -> None:
     orchestrator = CeaserOrchestrator.__new__(CeaserOrchestrator)
 

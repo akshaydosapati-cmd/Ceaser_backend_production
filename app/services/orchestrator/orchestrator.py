@@ -185,7 +185,11 @@ class CeaserOrchestrator:
                 file_ids=file_ids or [],
             )
             memory_first_results = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
-        has_internal_context = bool(memory_first_results) or bool((memory_first_context or {}).get("evidence", "").strip())
+        has_internal_context = self._has_relevant_internal_context(
+            message=effective_message,
+            knowledge_context=memory_first_context,
+            memories=memory_first_results,
+        )
         research_result = self._maybe_research(
             query=self._research_query(message, conversation_context),
             selected_agent_names=selected_agent_names,
@@ -467,9 +471,17 @@ class CeaserOrchestrator:
                 file_ids=file_ids or [],
             )
             memory_first_results = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
-        has_internal_context = bool(memory_first_results) or bool((memory_first_context or {}).get("evidence", "").strip())
+        has_internal_context = self._has_relevant_internal_context(
+            message=effective_message,
+            knowledge_context=memory_first_context,
+            memories=memory_first_results,
+        )
         tool_calls_started = perf_counter()
-        if not research_result and self._should_run_live_research(route=route_decision.route, has_internal_context=has_internal_context):
+        web_search_requested = not research_result and self._should_run_live_research(
+            route=route_decision.route,
+            has_internal_context=has_internal_context,
+        )
+        if web_search_requested:
             research_result = self._maybe_research(
                 query=self._research_query(message, conversation_context),
                 selected_agent_names=selected_agent_names,
@@ -496,6 +508,9 @@ class CeaserOrchestrator:
             "intent_ms": knowledge_context.get("_intent_ms"),
             "context_tokens": knowledge_context.get("_context_tokens"),
             "retrieval_scope": knowledge_context.get("retrieval_scope"),
+            "internal_context_found": has_internal_context,
+            "memory_match_count": len(memory_first_results),
+            "web_search_requested": web_search_requested,
             "context_mode": "follow_up" if lightweight_follow_up else "minimal" if lightweight_normal else "retrieval",
             "knowledge_route": route_decision.route.value,
             "knowledge_route_reason": route_decision.reason,
@@ -2050,6 +2065,48 @@ class CeaserOrchestrator:
         if has_internal_context:
             return False
         return route in {KnowledgeRoute.GENERAL, KnowledgeRoute.RESEARCH}
+
+    @staticmethod
+    def _has_relevant_internal_context(
+        *,
+        message: str,
+        knowledge_context: dict[str, Any] | None,
+        memories: list[dict] | None,
+    ) -> bool:
+        """Only block live search when CEASER has usable user-scoped evidence."""
+        context = knowledge_context or {}
+        evidence = str(context.get("evidence") or "").strip()
+        if evidence:
+            return True
+
+        query_terms = CeaserOrchestrator._meaningful_terms(message)
+        if not query_terms:
+            return False
+
+        for memory in memories or []:
+            memory_text = " ".join(
+                str(memory.get(key) or "")
+                for key in ("title", "name", "summary", "content", "text", "description")
+            )
+            memory_terms = CeaserOrchestrator._meaningful_terms(memory_text)
+            if len(query_terms & memory_terms) >= 2:
+                return True
+        return False
+
+    @staticmethod
+    def _meaningful_terms(text: str) -> set[str]:
+        stopwords = {
+            "about", "after", "again", "also", "and", "answer", "are", "can", "could", "current",
+            "did", "does", "explain", "for", "from", "give", "have", "how", "into", "latest",
+            "make", "more", "please", "recent", "search", "show", "summarize", "tell", "that",
+            "the", "their", "them", "then", "there", "this", "today", "what", "when", "where",
+            "which", "with", "would", "you", "your",
+        }
+        return {
+            token
+            for token in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]{2,}", text.lower())
+            if token not in stopwords
+        }
 
     def _default_stream_agents(self, message: str) -> list[str]:
         normalized = message.lower()
