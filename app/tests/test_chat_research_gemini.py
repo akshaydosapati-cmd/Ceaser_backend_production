@@ -17,6 +17,7 @@ from app.engines.research_engine.page_extractor import PageExtractor
 from app.engines.research_engine.schemas import ResearchResult, ResearchSource
 from app.engines.research_engine.search_provider import DuckDuckGoSearchProvider
 from app.engines.research_engine.source_collector import SourceCollector
+from app.services.orchestrator.knowledge_router import KnowledgeRoute, KnowledgeRouter
 from app.main import create_app
 from app.models.user import User
 from app.services.conversation_service import ConversationService
@@ -142,6 +143,16 @@ def test_page_extractor_uses_safe_open_graph_image_only() -> None:
     html = '<meta property="og:image" content="/images/preview.jpg"><meta name="twitter:image" content="javascript:alert(1)">'
 
     assert extractor._image_url(html, "https://example.com/article") == "https://example.com/images/preview.jpg"
+
+
+def test_open_factual_question_uses_live_research() -> None:
+    decision = KnowledgeRouter().classify(
+        message="What are the war machines India has?",
+        has_attached_files=False,
+        is_follow_up=False,
+    )
+
+    assert decision.route is KnowledgeRoute.RESEARCH
 
 
 def test_duckduckgo_provider_does_not_fallback_to_search_url(monkeypatch) -> None:

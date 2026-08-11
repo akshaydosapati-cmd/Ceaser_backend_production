@@ -49,7 +49,8 @@ class PageExtractor:
         title = self._title(text)
         clean_text = self._clean(text)
         excerpt = self._excerpt(clean_text, query)
-        if not excerpt:
+        image_url = self._image_url(text, url)
+        if not excerpt and not image_url:
             return None
         return ExtractedPage(
             url=url,
@@ -57,7 +58,7 @@ class PageExtractor:
             publisher=parsed.netloc.replace("www.", ""),
             excerpt=excerpt,
             retrieved_at=datetime.now(timezone.utc).isoformat(),
-            image_url=self._image_url(text, url),
+            image_url=image_url,
         )
 
     def _title(self, text: str) -> str | None:

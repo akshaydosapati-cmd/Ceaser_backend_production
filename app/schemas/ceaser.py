@@ -42,6 +42,7 @@ class ResearchSourceResponse(BaseModel):
     excerpt: str | None = None
     publisher: str | None = None
     retrieved_at: str | None = None
+    image_url: str | None = None
     score: float = 0
 
 

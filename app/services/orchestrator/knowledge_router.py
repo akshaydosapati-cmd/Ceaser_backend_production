@@ -54,6 +54,15 @@ class KnowledgeRouter:
             return RouteDecision(KnowledgeRoute.MEMORY, "personal memory request")
         if any(term in text for term in ("latest", "current", "today", "yesterday", "news", "live update", "recent", "this week", "this month", "this year", "stock price", "weather", "who won", "score", "stats", "statistics", "centuries", "records", "web search", "internet", "sources", "citations", "competitor", "market research")):
             return RouteDecision(KnowledgeRoute.RESEARCH, "fresh information request")
+        if self._is_open_web_question(text):
+            return RouteDecision(KnowledgeRoute.RESEARCH, "external factual question")
         if any(text.startswith(prefix) for prefix in ("open ", "launch ", "start ", "create folder ", "take screenshot", "read clipboard")):
             return RouteDecision(KnowledgeRoute.DESKTOP, "desktop command")
         return RouteDecision(KnowledgeRoute.GENERAL, "stable general knowledge")
+
+    @staticmethod
+    def _is_open_web_question(text: str) -> bool:
+        """Use live sources for factual questions without confusing local commands for web queries."""
+        if not text.endswith("?"):
+            return False
+        return text.startswith(("what is ", "what are ", "who is ", "who are ", "when did ", "where is ", "where are ", "how does ", "how do "))
