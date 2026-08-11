@@ -4,7 +4,7 @@ import html
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -16,6 +16,7 @@ class ExtractedPage:
     publisher: str | None
     excerpt: str
     retrieved_at: str
+    image_url: str | None = None
 
 
 class PageExtractor:
@@ -56,6 +57,7 @@ class PageExtractor:
             publisher=parsed.netloc.replace("www.", ""),
             excerpt=excerpt,
             retrieved_at=datetime.now(timezone.utc).isoformat(),
+            image_url=self._image_url(text, url),
         )
 
     def _title(self, text: str) -> str | None:
@@ -71,6 +73,22 @@ class PageExtractor:
         text = re.sub(r"(?is)<[^>]+>", " ", text)
         text = html.unescape(text)
         return re.sub(r"\s+", " ", text).strip()
+
+    def _image_url(self, text: str, page_url: str) -> str | None:
+        """Return a page-owned social preview image, never an arbitrary HTML URL."""
+        for tag in re.findall(r"<meta\b[^>]*>", text, flags=re.IGNORECASE):
+            key_match = re.search(r"\b(?:property|name)\s*=\s*['\"]([^'\"]+)['\"]", tag, flags=re.IGNORECASE)
+            if not key_match or key_match.group(1).lower() not in {"og:image", "og:image:secure_url", "twitter:image", "twitter:image:src"}:
+                continue
+            content_match = re.search(r"\bcontent\s*=\s*['\"]([^'\"]+)['\"]", tag, flags=re.IGNORECASE)
+            if not content_match:
+                continue
+            candidate = html.unescape(content_match.group(1).strip())
+            resolved = urljoin(page_url, candidate)
+            parsed = urlparse(resolved)
+            if parsed.scheme == "https" and parsed.netloc:
+                return resolved[:2048]
+        return None
 
     def _excerpt(self, text: str, query: str) -> str:
         if not text:

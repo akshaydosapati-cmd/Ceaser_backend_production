@@ -35,6 +35,7 @@ class SourceCollector:
             source.excerpt = extracted.excerpt
             source.publisher = extracted.publisher
             source.retrieved_at = extracted.retrieved_at
+            source.image_url = extracted.image_url
             if extracted.title and (not source.title or source.title == source.url):
                 source.title = extracted.title
             if extracted.excerpt:

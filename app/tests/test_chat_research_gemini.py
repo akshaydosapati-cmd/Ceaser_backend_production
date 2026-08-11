@@ -13,6 +13,7 @@ from app.core.database.base import Base
 from app.core.database.session import get_db
 from app.core.security.dependencies import get_current_user
 from app.engines.research_engine.engine import ResearchEngine
+from app.engines.research_engine.page_extractor import PageExtractor
 from app.engines.research_engine.schemas import ResearchResult, ResearchSource
 from app.engines.research_engine.search_provider import DuckDuckGoSearchProvider
 from app.engines.research_engine.source_collector import SourceCollector
@@ -134,6 +135,13 @@ def test_research_engine_does_not_create_fake_search_source() -> None:
     assert result.sources == []
     assert result.citations == []
     assert "No live sources" in result.summary
+
+
+def test_page_extractor_uses_safe_open_graph_image_only() -> None:
+    extractor = PageExtractor()
+    html = '<meta property="og:image" content="/images/preview.jpg"><meta name="twitter:image" content="javascript:alert(1)">'
+
+    assert extractor._image_url(html, "https://example.com/article") == "https://example.com/images/preview.jpg"
 
 
 def test_duckduckgo_provider_does_not_fallback_to_search_url(monkeypatch) -> None:
