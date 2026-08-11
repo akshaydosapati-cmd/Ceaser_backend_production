@@ -17,31 +17,35 @@ class SearchProvider(ABC):
     def search(self, query: str, limit: int = 6) -> list[dict]:
         raise NotImplementedError
 
+    def search_images(self, query: str, limit: int = 3) -> list[dict]:
+        _ = query, limit
+        return []
 
-class GoogleSearchProvider(SearchProvider):
-    """Google Programmable Search provider for live, ranked web research."""
 
-    def __init__(self, api_key: str | None = None, engine_id: str | None = None, base_url: str | None = None):
+class SerperSearchProvider(SearchProvider):
+    """Google-ranked web and image search through Serper's API."""
+
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self.api_key = api_key if api_key is not None else settings.search_api_key
-        self.engine_id = engine_id if engine_id is not None else settings.search_engine_id
-        self.base_url = (base_url or settings.search_api_base_url or "https://www.googleapis.com/customsearch/v1").rstrip("/")
+        self.base_url = (base_url or settings.search_api_base_url or "https://google.serper.dev/search").rstrip("/")
 
     def search(self, query: str, limit: int = 6) -> list[dict]:
-        if not self.api_key or not self.engine_id:
+        if not self.api_key:
             return []
         result_limit = max(1, min(limit, 10))
-        cache_key = f"research:google:{query.strip().lower()}:{result_limit}"
+        cache_key = f"research:serper:{query.strip().lower()}:{result_limit}"
         cached = ttl_cache.get(cache_key)
         if cached is not None:
             return cached
         try:
             with httpx.Client(timeout=10, follow_redirects=True, trust_env=False) as client:
-                response = client.get(
+                response = client.post(
                     self.base_url,
-                    params={"key": self.api_key, "cx": self.engine_id, "q": query, "num": result_limit, "safe": "active"},
+                    headers={"X-API-KEY": self.api_key, "Content-Type": "application/json"},
+                    json={"q": query, "num": result_limit, "autocorrect": False},
                 )
                 response.raise_for_status()
-                items = response.json().get("items", [])
+                items = response.json().get("organic", [])
         except Exception:  # noqa: BLE001
             return []
 
@@ -50,20 +54,47 @@ class GoogleSearchProvider(SearchProvider):
             url = str(item.get("link") or "").strip()
             if not url.startswith(("https://", "http://")):
                 continue
-            page_map = item.get("pagemap") if isinstance(item.get("pagemap"), dict) else {}
-            image_entries = page_map.get("cse_image") if isinstance(page_map.get("cse_image"), list) else []
-            image_url = next((entry.get("src") for entry in image_entries if isinstance(entry, dict) and str(entry.get("src") or "").startswith("https://")), None)
             sources.append(
                 {
                     "title": str(item.get("title") or url),
                     "url": url,
-                    "source": str(item.get("displayLink") or urlparse(url).netloc.replace("www.", "")),
+                    "source": str(item.get("domain") or urlparse(url).netloc.replace("www.", "")),
                     "snippet": str(item.get("snippet") or ""),
-                    "image_url": image_url,
                 }
             )
         ttl_cache.set(cache_key, sources, ttl_seconds=300)
         return sources
+
+    def search_images(self, query: str, limit: int = 3) -> list[dict]:
+        if not self.api_key:
+            return []
+        result_limit = max(1, min(limit, 10))
+        cache_key = f"research:serper-images:{query.strip().lower()}:{result_limit}"
+        cached = ttl_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        image_url = f"{self.base_url.rsplit('/', 1)[0]}/images"
+        try:
+            with httpx.Client(timeout=10, follow_redirects=True, trust_env=False) as client:
+                response = client.post(
+                    image_url,
+                    headers={"X-API-KEY": self.api_key, "Content-Type": "application/json"},
+                    json={"q": query, "num": result_limit, "autocorrect": False},
+                )
+                response.raise_for_status()
+                items = response.json().get("images", [])
+        except Exception:  # noqa: BLE001
+            return []
+
+        images = []
+        for item in items:
+            page_url = str(item.get("link") or "").strip()
+            preview_url = str(item.get("imageUrl") or item.get("thumbnailUrl") or "").strip()
+            if not page_url.startswith(("https://", "http://")) or not preview_url.startswith("https://"):
+                continue
+            images.append({"title": str(item.get("title") or "Live web image"), "url": page_url, "image_url": preview_url, "source": str(item.get("source") or item.get("domain") or urlparse(page_url).netloc.replace("www.", ""))})
+        ttl_cache.set(cache_key, images, ttl_seconds=300)
+        return images
 
 
 class DuckDuckGoSearchProvider(SearchProvider):

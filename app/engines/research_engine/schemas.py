@@ -24,9 +24,17 @@ class Citation(BaseModel):
     url: str
 
 
+class ResearchImage(BaseModel):
+    title: str
+    url: str
+    image_url: str
+    source: str
+
+
 class ResearchResult(BaseModel):
     query: str
     summary: str
     key_findings: list[str]
     sources: list[ResearchSource]
     citations: list[Citation]
+    images: list[ResearchImage] = Field(default_factory=list)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.engines.research_engine.citation_builder import CitationBuilder
-from app.engines.research_engine.schemas import ResearchResult
+from app.engines.research_engine.schemas import ResearchImage, ResearchResult
 from app.engines.research_engine.source_collector import SourceCollector
 
 
@@ -12,6 +12,7 @@ class ResearchEngine:
 
     def research(self, query: str) -> ResearchResult:
         sources = self.source_collector.collect_sources(query=query)
+        images = [ResearchImage(**image) for image in self.source_collector.collect_images(query=query)]
         citations = self.citation_builder.build(sources)
         key_findings = [source.excerpt or source.snippet for source in sources if source.excerpt or source.snippet][:5]
         summary = self._summary(query=query, key_findings=key_findings, source_count=len(sources))
@@ -21,6 +22,7 @@ class ResearchEngine:
             key_findings=key_findings,
             sources=sources,
             citations=citations,
+            images=images,
         )
 
     def _summary(self, query: str, key_findings: list[str], source_count: int) -> str:

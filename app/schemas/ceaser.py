@@ -51,12 +51,20 @@ class CitationResponse(BaseModel):
     url: str
 
 
+class ResearchImageResponse(BaseModel):
+    title: str
+    url: str
+    image_url: str
+    source: str
+
+
 class ResearchResultResponse(BaseModel):
     query: str
     summary: str
     key_findings: list[str]
     sources: list[ResearchSourceResponse]
     citations: list[CitationResponse]
+    images: list[ResearchImageResponse] = Field(default_factory=list)
 
 
 class WorkflowResponse(BaseModel):

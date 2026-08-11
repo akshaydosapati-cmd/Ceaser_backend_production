@@ -15,7 +15,7 @@ from app.core.security.dependencies import get_current_user
 from app.engines.research_engine.engine import ResearchEngine
 from app.engines.research_engine.page_extractor import PageExtractor
 from app.engines.research_engine.schemas import ResearchResult, ResearchSource
-from app.engines.research_engine.search_provider import DuckDuckGoSearchProvider, GoogleSearchProvider
+from app.engines.research_engine.search_provider import DuckDuckGoSearchProvider, SerperSearchProvider
 from app.engines.research_engine.source_collector import SourceCollector
 from app.services.orchestrator.knowledge_router import KnowledgeRoute, KnowledgeRouter
 from app.main import create_app
@@ -155,13 +155,16 @@ def test_open_factual_question_uses_live_research() -> None:
     assert decision.route is KnowledgeRoute.RESEARCH
 
 
-def test_google_search_uses_ranked_results_and_result_image(monkeypatch) -> None:
+def test_serper_search_returns_ranked_results_and_images(monkeypatch) -> None:
     class Response:
+        def __init__(self, payload: dict):
+            self.payload = payload
+
         def raise_for_status(self) -> None:
             return None
 
         def json(self) -> dict:
-            return {"items": [{"title": "India defence", "link": "https://example.com/defence", "displayLink": "example.com", "snippet": "Defence overview", "pagemap": {"cse_image": [{"src": "https://images.example.com/defence.jpg"}]}}]}
+            return self.payload
 
     class Client:
         def __enter__(self):
@@ -170,16 +173,20 @@ def test_google_search_uses_ranked_results_and_result_image(monkeypatch) -> None
         def __exit__(self, *args):
             return None
 
-        def get(self, url, params):
-            assert params["cx"] == "engine-id"
-            assert params["q"] == "India defence"
-            return Response()
+        def post(self, url, headers, json):
+            assert headers["X-API-KEY"] == "test-key"
+            assert json["q"] == "India defence"
+            if url.endswith("/images"):
+                return Response({"images": [{"title": "Indian tank", "link": "https://example.com/tank", "imageUrl": "https://images.example.com/tank.jpg", "source": "Example"}]})
+            return Response({"organic": [{"title": "India defence", "link": "https://example.com/defence", "domain": "example.com", "snippet": "Defence overview"}]})
 
     monkeypatch.setattr("httpx.Client", lambda **kwargs: Client())
-    sources = GoogleSearchProvider(api_key="test-key", engine_id="engine-id").search("India defence", limit=3)
+    provider = SerperSearchProvider(api_key="test-key")
+    sources = provider.search("India defence", limit=3)
+    images = provider.search_images("India defence", limit=3)
 
     assert sources[0]["url"] == "https://example.com/defence"
-    assert sources[0]["image_url"] == "https://images.example.com/defence.jpg"
+    assert images[0]["image_url"] == "https://images.example.com/tank.jpg"
 
 
 def test_duckduckgo_provider_does_not_fallback_to_search_url(monkeypatch) -> None:

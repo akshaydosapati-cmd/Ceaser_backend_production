@@ -4,12 +4,12 @@ from urllib.parse import urlparse
 
 from app.engines.research_engine.page_extractor import PageExtractor
 from app.engines.research_engine.schemas import ResearchSource
-from app.engines.research_engine.search_provider import GoogleSearchProvider, SearchProvider
+from app.engines.research_engine.search_provider import SearchProvider, SerperSearchProvider
 
 
 class SourceCollector:
     def __init__(self, provider: SearchProvider | None = None, page_extractor: PageExtractor | None = None):
-        self.provider = provider or GoogleSearchProvider()
+        self.provider = provider or SerperSearchProvider()
         self.page_extractor = page_extractor or PageExtractor()
 
     def collect_sources(self, query: str, limit: int = 6) -> list[ResearchSource]:
@@ -43,6 +43,10 @@ class SourceCollector:
                 source.snippet = extracted.excerpt[:500]
                 source.score += 2
         return sorted(ranked_sources, key=lambda item: item.score, reverse=True)
+
+    def collect_images(self, query: str, limit: int = 3) -> list[dict]:
+        search_images = getattr(self.provider, "search_images", None)
+        return search_images(query=query, limit=limit) if callable(search_images) else []
 
     def _score(self, query: str, title: str, snippet: str, url: str) -> float:
         query_terms = {term.lower() for term in query.split() if len(term) > 2}
