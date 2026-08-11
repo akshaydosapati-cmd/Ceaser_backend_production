@@ -32,12 +32,9 @@ class OpenAIProvider(LLMProvider):
         temperature: float | None = None,
         max_output_tokens: int | None = None,
     ) -> str:
-        if self._requires_live_web(instructions, input_text):
-            return await self._responses_web_generate(
-                instructions=instructions,
-                input_text=input_text,
-                max_output_tokens=max_output_tokens or settings.openai_max_tokens,
-            )
+        # Public-web evidence is collected by ResearchEngine (Serper) before
+        # this provider is called. OpenAI's web tool would bypass that flow,
+        # hide the source selection from CEASER, and spend a second search.
         data = await self._post(
             model=model or settings.openai_model,
             instructions=instructions,
@@ -82,16 +79,6 @@ class OpenAIProvider(LLMProvider):
         if not settings.openai_api_key:
             logger.error("OpenAI stream blocked: OPENAI_API_KEY is not configured.")
             raise AIServiceUnavailableError("OPENAI_API_KEY is not configured.")
-        if self._requires_live_web(instructions, input_text):
-            text = await self._responses_web_generate(
-                instructions=instructions,
-                input_text=input_text,
-                max_output_tokens=max_output_tokens or settings.openai_max_tokens,
-                trace=trace,
-            )
-            for chunk in self._progressive_chunks(text):
-                yield chunk
-            return
         global _quota_blocked_until
         if time.time() < _quota_blocked_until:
             raise AIServiceUnavailableError("OpenAI quota circuit is temporarily open.")

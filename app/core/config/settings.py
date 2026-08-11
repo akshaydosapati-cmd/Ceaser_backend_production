@@ -51,7 +51,9 @@ class Settings(BaseSettings):
     provider_circuit_breaker_seconds: int = Field(default=300, alias="PROVIDER_CIRCUIT_BREAKER_SECONDS")
     openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
     openai_json_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_JSON_MODEL")
-    openai_web_search_enabled: bool = Field(default=True, alias="OPENAI_WEB_SEARCH_ENABLED")
+    # Public web evidence is gathered through the configured search provider
+    # (Serper in production) before OpenAI is asked to compose an answer.
+    openai_web_search_enabled: bool = Field(default=False, alias="OPENAI_WEB_SEARCH_ENABLED")
     openai_web_search_model: str = Field(default="chat-latest", alias="OPENAI_WEB_SEARCH_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBEDDING_MODEL")
     openai_embedding_dimension: int = Field(default=1536, alias="OPENAI_EMBEDDING_DIMENSION")
