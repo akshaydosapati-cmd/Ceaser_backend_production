@@ -20,6 +20,7 @@ from app.services.orchestrator.agent_selector import AgentSelector
 from app.services.orchestrator.memory_capture import MemoryCapture
 from app.services.orchestrator.memory_retriever import MemoryRetriever
 from app.services.orchestrator.orchestrator import CeaserOrchestrator
+from app.services.orchestrator.knowledge_router import KnowledgeRoute
 from app.services.orchestrator.user_context_resolver import UserContextResolver
 
 
@@ -207,6 +208,12 @@ def test_orchestrator_extracts_generic_research_topics() -> None:
     assert orchestrator._research_query("do a research on healthtech 2026 and then give me the resources.") == "healthtech 2026"
     assert orchestrator._research_query("search the web for AI healthcare startups in India and give sources") == "AI healthcare startups in India"
     assert orchestrator._research_query("look up federated data architectures in healthcare") == "federated data architectures in healthcare"
+
+
+def test_live_research_runs_only_without_internal_context() -> None:
+    assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.GENERAL, has_internal_context=False) is True
+    assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.GENERAL, has_internal_context=True) is False
+    assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.FOLLOW_UP, has_internal_context=False) is False
 
 
 def test_filler_prefixed_expand_request_continues_active_topic() -> None:

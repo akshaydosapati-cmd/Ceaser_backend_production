@@ -175,15 +175,30 @@ class CeaserOrchestrator:
             workflow = self.workflow_orchestrator.run(user_id=user_id, message=message, conversation_id=conversation_id, file_ids=file_ids or [])
         selected_agent_names = workflow.selected_agents if workflow else self._default_stream_agents(message)
         report_request = self._is_report_request(message)
-        research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names) if route_decision.route is KnowledgeRoute.RESEARCH else None
+        memory_first_context: dict[str, Any] | None = None
+        memory_first_results: list[dict] = []
+        if route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.RESEARCH}:
+            memory_first_context = self._knowledge_context(
+                user_id=user_id,
+                message=effective_message,
+                conversation_id=conversation.id if conversation else conversation_id,
+                file_ids=file_ids or [],
+            )
+            memory_first_results = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        has_internal_context = bool(memory_first_results) or bool((memory_first_context or {}).get("evidence", "").strip())
+        research_result = self._maybe_research(
+            query=self._research_query(message, conversation_context),
+            selected_agent_names=selected_agent_names,
+        ) if self._should_run_live_research(route=route_decision.route, has_internal_context=has_internal_context) else None
         lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
-        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP} and not self._requires_rich_context(message)
-        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
+        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP} and not self._requires_rich_context(message) and memory_first_context is None
+        knowledge_context = memory_first_context or (self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
-        )
-        memories = [] if lightweight_follow_up or lightweight_normal else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
+            file_ids=file_ids or [],
+        ))
+        memories = memory_first_results if memory_first_context is not None else [] if lightweight_follow_up or lightweight_normal else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         final_response = self.response_pipeline.generate(
             message=message,
@@ -423,6 +438,8 @@ class CeaserOrchestrator:
         report_request = self._is_report_request(message)
         workflow = None
         research_result = None
+        memory_first_context: dict[str, Any] | None = None
+        memory_first_results: list[dict] = []
         routing_started = perf_counter()
         if self._is_explicit_workflow_creation_request(message):
             workflow = self.workflow_orchestrator.run(
@@ -438,8 +455,21 @@ class CeaserOrchestrator:
             selected_agent_names = self._default_stream_agents(message)
 
         routing_finished = perf_counter()
+        retrieval_started = perf_counter()
+        # CEASER's own user-scoped knowledge is always considered before the
+        # public web for general chat. A matching file, project, memory, or
+        # prior CEASER resource is stronger evidence than a generic search hit.
+        if route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.RESEARCH}:
+            memory_first_context = self._knowledge_context(
+                user_id=user_id,
+                message=effective_message,
+                conversation_id=conversation.id if conversation else conversation_id,
+                file_ids=file_ids or [],
+            )
+            memory_first_results = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        has_internal_context = bool(memory_first_results) or bool((memory_first_context or {}).get("evidence", "").strip())
         tool_calls_started = perf_counter()
-        if not research_result and route_decision.route is KnowledgeRoute.RESEARCH:
+        if not research_result and self._should_run_live_research(route=route_decision.route, has_internal_context=has_internal_context):
             research_result = self._maybe_research(
                 query=self._research_query(message, conversation_context),
                 selected_agent_names=selected_agent_names,
@@ -447,16 +477,15 @@ class CeaserOrchestrator:
         tool_calls_finished = perf_counter()
 
         lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
-        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP} and not self._requires_rich_context(message)
-        retrieval_started = perf_counter()
-        knowledge_context = self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
+        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP} and not self._requires_rich_context(message) and memory_first_context is None
+        knowledge_context = memory_first_context or (self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
             file_ids=file_ids or [],
-        )
+        ))
         skip_memory_retrieval = lightweight_follow_up or lightweight_normal or is_file_summary_request or knowledge_context.get("retrieval_scope") in {"none", "conversation_only", "web", "integrations"}
-        memories = [] if skip_memory_retrieval else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        memories = memory_first_results if memory_first_context is not None else [] if skip_memory_retrieval else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         retrieval_finished = perf_counter()
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         observability = {
@@ -2014,6 +2043,13 @@ class CeaserOrchestrator:
         _ = selected_agents
         asks_for_recent_year = bool(re.search(r"\b20(?:2[5-9]|[3-9]\d)\b", normalized))
         return explicit_research or asks_for_recent_year
+
+    @staticmethod
+    def _should_run_live_research(*, route: KnowledgeRoute, has_internal_context: bool) -> bool:
+        """Search the web only after user-scoped context has no usable evidence."""
+        if has_internal_context:
+            return False
+        return route in {KnowledgeRoute.GENERAL, KnowledgeRoute.RESEARCH}
 
     def _default_stream_agents(self, message: str) -> list[str]:
         normalized = message.lower()
