@@ -130,6 +130,7 @@ class Settings(BaseSettings):
     search_provider: str | None = Field(default=None, alias="SEARCH_PROVIDER")
     search_api_key: str | None = Field(default=None, alias="SEARCH_API_KEY")
     search_api_base_url: str | None = Field(default=None, alias="SEARCH_API_BASE_URL")
+    search_engine_id: str | None = Field(default=None, alias="SEARCH_ENGINE_ID")
     search_max_results: int = Field(default=8, alias="SEARCH_MAX_RESULTS")
     market_provider: str | None = Field(default=None, alias="MARKET_PROVIDER")
     market_api_key: str | None = Field(default=None, alias="MARKET_API_KEY")

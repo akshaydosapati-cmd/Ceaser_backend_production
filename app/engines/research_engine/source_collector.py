@@ -4,12 +4,12 @@ from urllib.parse import urlparse
 
 from app.engines.research_engine.page_extractor import PageExtractor
 from app.engines.research_engine.schemas import ResearchSource
-from app.engines.research_engine.search_provider import DuckDuckGoSearchProvider, SearchProvider
+from app.engines.research_engine.search_provider import GoogleSearchProvider, SearchProvider
 
 
 class SourceCollector:
     def __init__(self, provider: SearchProvider | None = None, page_extractor: PageExtractor | None = None):
-        self.provider = provider or DuckDuckGoSearchProvider()
+        self.provider = provider or GoogleSearchProvider()
         self.page_extractor = page_extractor or PageExtractor()
 
     def collect_sources(self, query: str, limit: int = 6) -> list[ResearchSource]:
@@ -24,6 +24,7 @@ class SourceCollector:
                 url=url,
                 source=raw.get("source") or self._host(url),
                 snippet=raw.get("snippet") or "",
+                image_url=raw.get("image_url"),
                 score=self._score(query=query, title=raw.get("title", ""), snippet=raw.get("snippet", ""), url=url),
             )
             deduped[url] = source
@@ -35,7 +36,7 @@ class SourceCollector:
             source.excerpt = extracted.excerpt
             source.publisher = extracted.publisher
             source.retrieved_at = extracted.retrieved_at
-            source.image_url = extracted.image_url
+            source.image_url = source.image_url or extracted.image_url
             if extracted.title and (not source.title or source.title == source.url):
                 source.title = extracted.title
             if extracted.excerpt:
