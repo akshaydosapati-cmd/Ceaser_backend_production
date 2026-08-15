@@ -33,7 +33,7 @@ def send_test_email(to_email: str):
             <li>Feature releases</li>
           </ul>
           <div style="text-align: center; margin: 24px 0 8px;">
-            <a href="https://ceaser.tech" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 999px; font-weight: 600;">Visit CEASER</a>
+            <a href="https://heyceaser.in" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 999px; font-weight: 600;">Visit CEASER</a>
           </div>
         </div>
         <div style="background: #f8fafc; padding: 24px; text-align: center; color: #64748b; font-size: 13px; line-height: 1.6; border-top: 1px solid #e5e7eb;">
@@ -50,6 +50,6 @@ def send_test_email(to_email: str):
             "to": [to_email],
             "subject": "🚀 Welcome to CEASER",
             "html": html_content,
-            "text": "Thank you for joining the CEASER Launch List. Visit https://ceaser.tech to learn more.",
+            "text": "Thank you for joining the CEASER Launch List. Visit https://heyceaser.in to learn more.",
         }
     )

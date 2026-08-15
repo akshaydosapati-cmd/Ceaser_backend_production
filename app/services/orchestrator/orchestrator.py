@@ -7,10 +7,12 @@ from dataclasses import asdict, replace
 from time import perf_counter
 from typing import Any
 from datetime import date, datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.agents.registry import AgentRegistry
+from app.agents.v2 import AgentOrchestrator as SpecialistAgentOrchestrator
 from app.engines.research_engine import ResearchEngine
 from app.models.conversation import Conversation, Message
 from app.models.project import Project, ProjectMember
@@ -25,6 +27,12 @@ from app.services.orchestrator.response_pipeline import ResponsePipeline
 from app.services.orchestrator.suggestion_engine import SuggestionEngine
 from app.services.project_service import ProjectService
 from app.services.orchestrator.user_context_resolver import UserContextResolver
+from app.services.local_bolt_dispatcher import LocalBoltDispatcher
+from app.services.github_project_service import GitHubProjectService
+from app.services.device_gateway_service import DeviceGatewayService
+from app.services.browser_automation_service import BrowserAutomationService
+from app.services.social_publishing_service import SocialPublishingService
+from app.models.social_publish import SocialPublishTask
 from app.services.workflows import WorkflowOrchestrator
 from app.services.integrations import IntegrationManager
 from app.services.integrations.integration_execution_engine import IntegrationExecutionEngine, IntegrationToolResult
@@ -45,6 +53,7 @@ class CeaserOrchestrator:
         self.memory_retriever = MemoryRetriever(db)
         self.knowledge_router = KnowledgeRouter()
         self.agent_registry = AgentRegistry()
+        self.specialist_agents = SpecialistAgentOrchestrator()
         self.context_builder = ContextBuilder(db)
         self.memory_capture = MemoryCapture(db)
         self.conversations = ConversationService(db)
@@ -63,6 +72,8 @@ class CeaserOrchestrator:
         *,
         request_id: str | None = None,
         parent_message_id: str | None = None,
+        device_id: str | None = None,
+        desktop_file_context: dict | None = None,
     ) -> dict:
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
         effective_message = message
@@ -103,6 +114,31 @@ class CeaserOrchestrator:
             )
             if conversation.title == "New Chat":
                 self.conversations.rename(conversation, self.conversations.generate_title(message))
+
+        social_response = self._maybe_social_publish(user_id=user_id,message=message,device_id=device_id,media=desktop_file_context)
+        if social_response:
+            return self._direct_response(user_id=user_id,conversation=conversation,conversation_id=conversation_id,conversation_context=conversation_context,follow_up_trace=follow_up_trace,response=social_response["response"],selected_agents=social_response.get("agents",["Nova","Friday"]),workflow_type="social_publishing",summary=social_response["summary"],request_id=request_id,parent_message_id=parent_message_id,response_metadata={"social_publish":social_response.get("data")})
+
+        github_write = self._maybe_github_write(
+            user_id=user_id,
+            message=message,
+            conversation=conversation,
+        )
+        if github_write:
+            return self._direct_response(
+                user_id=user_id,
+                conversation=conversation,
+                conversation_id=conversation_id,
+                conversation_context=conversation_context,
+                follow_up_trace=follow_up_trace,
+                response=github_write["response"],
+                selected_agents=["Bolt"],
+                workflow_type="github_write",
+                summary=github_write["summary"],
+                request_id=request_id,
+                parent_message_id=parent_message_id,
+                response_metadata={"pending_github_action": github_write.get("pending")},
+            )
 
         # Integration routing must use the user's actual text, never the
         # contextual prompt wrapper added for a follow-up response.
@@ -170,6 +206,28 @@ class CeaserOrchestrator:
                 parent_message_id=parent_message_id,
             )
 
+        browser_dispatch = self._maybe_dispatch_browser(user_id=user_id, message=message, request_id=request_id)
+        if browser_dispatch:
+            status = browser_dispatch.get("status")
+            response = "I started that browser task on your connected Desktop Companion." if status == "queued" else "Connect an eligible Desktop Companion to continue the browser task." if status == "waiting_for_device" else f"The browser task could not start: {browser_dispatch.get('error') or 'unknown'}."
+            return self._direct_response(user_id=user_id,conversation=conversation,conversation_id=conversation_id,conversation_context=conversation_context,follow_up_trace=follow_up_trace,response=response,selected_agents=["Friday"],workflow_type="browser_automation",summary="Browser task queued." if status=="queued" else "Browser task not started.",request_id=request_id,parent_message_id=parent_message_id)
+
+        bolt_dispatch = self._maybe_dispatch_local_bolt(user_id=user_id, message=message, request_id=request_id)
+        if bolt_dispatch:
+            status = bolt_dispatch.get("status")
+            response = (
+                f"Bolt started the local project on your connected Desktop Companion. Project: {bolt_dispatch.get('project_name')}."
+                if status == "queued" else
+                "Bolt is ready, but an eligible Desktop Companion must be connected before local development can start."
+            )
+            return self._direct_response(
+                user_id=user_id, conversation=conversation, conversation_id=conversation_id,
+                conversation_context=conversation_context, follow_up_trace=follow_up_trace, response=response,
+                selected_agents=["Bolt"], workflow_type="local_software_engineering",
+                summary="Local Bolt task queued." if status == "queued" else "Waiting for an eligible Desktop Companion.",
+                request_id=request_id, parent_message_id=parent_message_id,
+            )
+
         workflow = None
         if self._is_explicit_workflow_creation_request(message):
             workflow = self.workflow_orchestrator.run(user_id=user_id, message=message, conversation_id=conversation_id, file_ids=file_ids or [])
@@ -203,6 +261,16 @@ class CeaserOrchestrator:
             file_ids=file_ids or [],
         ))
         memories = memory_first_results if memory_first_context is not None else [] if lightweight_follow_up or lightweight_normal else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
+        specialist_plan = self.specialist_agents.prepare(
+            message,
+            {
+                "conversation": conversation_context.get("messages", [])[-8:],
+                "memories": memories,
+                "active_project": (knowledge_context.get("projects") or [None])[0] if isinstance(knowledge_context, dict) else None,
+                "cloud_resources": knowledge_context.get("resources", []) if isinstance(knowledge_context, dict) else [],
+                "available_capabilities": [item for definition in self.specialist_agents.registry.enabled() for item in definition.allowed_capability_categories],
+            },
+        )
         captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
         final_response = self.response_pipeline.generate(
             message=message,
@@ -224,6 +292,7 @@ class CeaserOrchestrator:
                     "contributions": workflow.contributions if workflow else [],
                     "summary": workflow.result_summary if workflow else "",
                     "workflow_response": workflow.final_response if workflow else "",
+                    "specialist_plan": specialist_plan,
                 },
                 "report_request": report_request,
                 "research_result": research_result.model_dump() if research_result else None,
@@ -828,6 +897,7 @@ class CeaserOrchestrator:
         summary: str,
         request_id: str | None = None,
         parent_message_id: str | None = None,
+        response_metadata: dict | None = None,
     ) -> dict:
         suggestions = self._generate_suggestions(
             user_query=conversation_context.get("messages", [{}])[-1].get("content", "") if conversation_context.get("messages") else response,
@@ -874,6 +944,7 @@ class CeaserOrchestrator:
             },
             "suggestions": [asdict(item) for item in suggestions],
             "response": response,
+            **(response_metadata or {}),
         }
         if conversation:
             assistant_message = self.conversations.create_message(
@@ -2109,30 +2180,10 @@ class CeaserOrchestrator:
         }
 
     def _default_stream_agents(self, message: str) -> list[str]:
-        normalized = message.lower()
-        if self._is_report_request(message):
-            # Reports should be informed by the relevant specialties, not be
-            # treated as a Friday-only content request. The final report is
-            # still one coherent response from the primary LLM.
-            agents = ["Nova"]
-            if any(term in normalized for term in ["business", "startup", "strategy", "market", "revenue", "growth", "saas"]):
-                agents.append("Zeus")
-            if any(term in normalized for term in ["technical", "system", "software", "app", "platform", "ai", "robot", "robotics", "engineering", "architecture", "healthcare"]):
-                agents.append("Atlas")
-            if any(term in normalized for term in ["project plan", "implementation plan", "execution", "timeline", "tasks", "milestone", "deadline"]):
-                agents.append("Bolt")
-            if any(term in normalized for term in ["content", "marketing", "campaign", "brand", "social"]):
-                agents.append("Friday")
-            return list(dict.fromkeys(agents))[:3]
-        if any(term in normalized for term in ["business", "startup", "strategy", "market"]):
-            return ["Nova", "Zeus"]
-        if any(term in normalized for term in ["research", "search", "sources", "competitor", "market research"]):
-            return ["Nova"]
-        if any(term in normalized for term in ["study", "learn", "exam", "notes"]):
-            return ["Alex"]
-        if any(term in normalized for term in ["content", "email", "post", "caption"]):
-            return ["Friday"]
-        return ["Alex"]
+        selection = self.specialist_agents.select(message)
+        if selection.route != "SPECIALIST":
+            return []
+        return [self.specialist_agents.registry.get(agent_id).name for agent_id in selection.agent_ids if self.specialist_agents.registry.get(agent_id)]
 
     @staticmethod
     def _is_report_request(message: str) -> bool:
@@ -2538,3 +2589,121 @@ class CeaserOrchestrator:
         if "digital health" in text and "startup" in text and "2026" in text:
             return "digital health startups started in 2026"
         return None
+
+    def _maybe_dispatch_browser(self, *, user_id: str, message: str, request_id: str | None) -> dict | None:
+        normalized=" ".join(message.lower().split())
+        if not re.search(r"\b(?:browser|website|web page|page|tab|navigate|visit|browse|instagram|amazon|youtube|facebook|github\.com|\.com|\.org|\.net)\b",normalized):return None
+        if not re.search(r"\b(?:open|go to|visit|navigate|inspect|read|tell me what|click|fill|type|upload|download|back|forward|reload|close tab|search)\b",normalized):return None
+        user=self.db.query(User).filter(User.id==user_id).first()
+        if not user:return {"status":"failed","error":"authentication"}
+        if re.fullmatch(r"(?:go )?back(?: in (?:the )?browser)?[.! ]*",normalized):capability,arguments="browser.back",{}
+        elif re.fullmatch(r"(?:go )?forward(?: in (?:the )?browser)?[.! ]*",normalized):capability,arguments="browser.forward",{}
+        elif re.search(r"\breload|refresh (?:the )?page\b",normalized):capability,arguments="browser.reload",{}
+        elif re.search(r"\b(?:inspect|read|tell me what).*(?:page|website|screen)\b",normalized):capability,arguments="browser.inspect",{"goal":message}
+        else:
+            match=re.search(r"https?://[^\s]+|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai)(?:/[^\s]*)?",message,re.I)
+            aliases={"instagram":"https://www.instagram.com","amazon":"https://www.amazon.com","youtube":"https://www.youtube.com","facebook":"https://www.facebook.com"}
+            url=match.group(0).rstrip(".,!?") if match else next((value for key,value in aliases.items() if key in normalized),None)
+            if not url:return None
+            capability,arguments="browser.navigate",{"url":url,"goal":message,"step":1}
+        return BrowserAutomationService(self.db).dispatch(user,capability=capability,arguments=arguments,task_id=request_id)
+
+    def _maybe_social_publish(self,*,user_id:str,message:str,device_id:str|None,media:dict|None)->dict|None:
+        normalized=" ".join(message.lower().split());user=self.db.query(User).filter(User.id==user_id).first()
+        if not user:return None
+        service=SocialPublishingService(self.db)
+        pending=self.db.query(SocialPublishTask).filter(SocialPublishTask.user_id==user_id,SocialPublishTask.status=="WAITING_FOR_CONFIRMATION").order_by(SocialPublishTask.created_at.desc()).first()
+        if pending and re.fullmatch(r"(?:yes|confirm|post it|publish|go ahead|do it)[.! ]*",normalized):
+            result=service.confirm(user,task_id=pending.task_id,device_id=device_id or pending.device_id)
+            response="Publishing started. I will report success only after the website verifies the post." if result.get("status")=="queued" else f"I could not publish it: {result.get('error') or 'unknown error'}."
+            return {"response":response,"summary":"Social publish confirmation processed.","data":result,"agents":["Friday"]}
+        if pending and re.fullmatch(r"(?:no|cancel|not now|never mind)[.! ]*",normalized):
+            pending.status="CANCELLED";self.db.commit();return {"response":"Okay, I cancelled the pending social post.","summary":"Social publish cancelled.","data":{"status":"cancelled"},"agents":["Friday"]}
+        match=re.search(r"\b(?:post|publish|upload)\b.*\b(instagram|linkedin|facebook|x|twitter)\b|\b(instagram|linkedin|facebook|x|twitter)\b.*\b(?:post|publish|upload)\b",normalized)
+        if not match:return None
+        platform=(match.group(1) or match.group(2) or "").replace("twitter","x")
+        result=service.prepare(user,prompt=message,platform=platform,media=media,device_id=device_id)
+        if result.get("status")=="clarification_required":response=result["message"]
+        elif result.get("status")=="waiting_for_confirmation":response=f"Your {platform.title()} post draft is ready. Review the preview while CEASER prepares the website's final publish step."
+        else:response=f"I could not prepare that post: {result.get('error') or 'unknown error'}."
+        return {"response":response,"summary":"Social post draft prepared." if result.get("status")=="waiting_for_confirmation" else "Social post needs attention.","data":result}
+
+    def _maybe_github_write(self, *, user_id: str, message: str, conversation: Conversation | None) -> dict | None:
+        normalized = " ".join(message.lower().split())
+        pending = self._pending_github_action(conversation)
+        affirmative = bool(re.fullmatch(r"(?:yes|confirm|go ahead|do it|proceed)[.! ]*", normalized))
+        negative = bool(re.fullmatch(r"(?:no|cancel|not now|never mind)[.! ]*", normalized))
+        if pending and negative:
+            return {"response": "Okay, I cancelled the GitHub write.", "summary": "GitHub write cancelled.", "pending": None}
+        if pending and affirmative:
+            user = self.db.query(User).filter(User.id == user_id).first()
+            if not user:
+                return {"response": "I could not verify your CEASER account.", "summary": "GitHub write rejected.", "pending": None}
+            capability = "git.set_remote" if pending["action"] == "create" else "project.export_files"
+            devices = [item for item in DeviceGatewayService(self.db).availability(user_id, capability) if item.connected and item.authenticated and item.authorized]
+            if len(devices) != 1:
+                reason = "Connect an eligible Desktop Companion first." if not devices else "Choose one Desktop Companion before continuing."
+                return {"response": reason, "summary": "GitHub write waiting for a device.", "pending": pending}
+            result = GitHubProjectService(self.db).execute(
+                user,
+                action=pending["action"],
+                device_id=devices[0].device_id,
+                project=pending.get("project") or {},
+                repository=pending.get("repository"),
+                private=bool(pending.get("private", True)),
+                confirmed=True,
+                task_id=pending.get("task_id"),
+            )
+            if result.get("status") == "completed":
+                data = result.get("data") or {}
+                repository = ((data.get("repository") or {}).get("full_name") if isinstance(data.get("repository"), dict) else data.get("repository")) or pending.get("repository")
+                return {"response": f"GitHub write completed and verified for {repository or 'the active project'}.", "summary": "GitHub write completed.", "pending": None}
+            category = result.get("error") or "unknown"
+            return {"response": f"GitHub write could not be completed. Safe error: {category}.", "summary": "GitHub write failed.", "pending": None}
+        action = None
+        if re.search(r"\bcreate\b.{0,50}\b(?:github )?(?:repository|repo)\b", normalized):
+            action = "create"
+        elif re.search(r"\bcommit\b.{0,30}\bpush\b", normalized):
+            action = "commit_push"
+        elif re.search(r"\bpush\b.{0,80}\b(?:github|project|changes|repo|repository)\b|\bpush this project\b", normalized):
+            action = "push"
+        if not action:
+            return None
+        name_match = re.search(r"(?:called|named|for)\s+([a-z0-9][a-z0-9 _.-]{1,80})", message, re.I)
+        repository = name_match.group(1).strip(" .") if name_match and action == "create" else None
+        pending = {
+            "action": action,
+            "repository": repository,
+            "private": True,
+            "project": {"project_name": None},
+            "task_id": f"github_{uuid4().hex}",
+        }
+        label = "create a private GitHub repository" if action == "create" else "commit and push the active project" if action == "commit_push" else "push the active project to GitHub"
+        return {"response": f"This will {label} using your connected GitHub account. Confirm?", "summary": "GitHub write awaiting confirmation.", "pending": pending}
+
+    def _pending_github_action(self, conversation: Conversation | None) -> dict | None:
+        if not conversation:
+            return None
+        for item in reversed(self.conversations.list_recent_messages(conversation.id, limit=8)):
+            if item.role != "assistant":
+                continue
+            value = (item.extra_metadata or {}).get("pending_github_action")
+            if isinstance(value, dict) and value.get("action") in {"create", "push", "commit_push"}:
+                return value
+            if "pending_github_action" in (item.extra_metadata or {}):
+                return None
+        return None
+
+    def _maybe_dispatch_local_bolt(self, *, user_id: str, message: str, request_id: str | None) -> dict | None:
+        selection = self.specialist_agents.select(message)
+        if selection.route != "SPECIALIST" or "bolt" not in selection.agent_ids:
+            return None
+        if re.search(r"\b(plan|strategy|roadmap|architecture|proposal)\b", message, re.I) and not re.search(r"\b(code|implement|develop|website|application|app|api)\b", message, re.I):
+            return None
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+        try:
+            return LocalBoltDispatcher(self.db).dispatch(user, message, task_id=request_id)
+        except (ValueError, RuntimeError):
+            return {"status": "failed", "reason": "bolt_plan_invalid"}

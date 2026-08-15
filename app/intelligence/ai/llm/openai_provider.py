@@ -135,11 +135,7 @@ class OpenAIProvider(LLMProvider):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
                 _quota_blocked_until = time.time() + 600
-            logger.error(
-                "OpenAI stream failed: status=%s body=%s",
-                exc.response.status_code,
-                exc.response.text[:1200],
-            )
+            logger.error("OpenAI stream failed: status=%s", exc.response.status_code)
             raise ai_error_from_http_error(exc, provider="openai") from exc
         except httpx.RequestError as exc:
             logger.error("OpenAI stream network error: %s", repr(exc))
@@ -199,11 +195,7 @@ class OpenAIProvider(LLMProvider):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
                 _quota_blocked_until = time.time() + 600
-            logger.error(
-                "OpenAI generation failed: status=%s body=%s",
-                exc.response.status_code,
-                exc.response.text[:1200],
-            )
+            logger.error("OpenAI generation failed: status=%s", exc.response.status_code)
             raise ai_error_from_http_error(exc, provider="openai") from exc
         except httpx.RequestError as exc:
             logger.error("OpenAI generation network error: %s", repr(exc))
@@ -264,11 +256,7 @@ class OpenAIProvider(LLMProvider):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 and "insufficient_quota" in exc.response.text:
                 _quota_blocked_until = time.time() + 600
-            logger.error(
-                "OpenAI web search failed: status=%s body=%s",
-                exc.response.status_code,
-                exc.response.text[:1200],
-            )
+            logger.error("OpenAI web search failed: status=%s", exc.response.status_code)
             raise ai_error_from_http_error(exc, provider="openai") from exc
         except httpx.RequestError as exc:
             logger.error("OpenAI web search network error: %s", repr(exc))

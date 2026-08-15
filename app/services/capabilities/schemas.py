@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.agents.v2.models import ExecutionTarget
+
 
 @dataclass(frozen=True)
 class CapabilitySurface:
@@ -24,6 +26,7 @@ class Capability:
     overlay_mode: str = "compact"
     requires_confirmation: bool = False
     requires_connected_account: bool = False
+    allowed_execution_targets: tuple[ExecutionTarget, ...] = (ExecutionTarget.NONE,)
 
     def as_dict(self) -> dict:
         return {
@@ -43,4 +46,5 @@ class Capability:
             "overlay_mode": self.overlay_mode,
             "requires_confirmation": self.requires_confirmation,
             "requires_connected_account": self.requires_connected_account,
+            "allowed_execution_targets": [target.value for target in self.allowed_execution_targets],
         }

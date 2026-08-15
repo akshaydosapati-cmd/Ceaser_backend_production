@@ -84,7 +84,7 @@ class HuggingFaceProvider(LLMProvider):
         )
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout()) as client:
+            async with httpx.AsyncClient(timeout=self._timeout(streaming=True)) as client:
                 connect_started = perf_counter()
                 async with client.stream(
                     "POST",
@@ -161,7 +161,7 @@ class HuggingFaceProvider(LLMProvider):
         endpoint = self._endpoint_url()
         hostname = urlparse(endpoint).hostname or "<invalid-host>"
         try:
-            async with httpx.AsyncClient(timeout=self._timeout()) as client:
+            async with httpx.AsyncClient(timeout=self._timeout(streaming=False)) as client:
                 response = await client.post(
                     endpoint,
                     headers=self._headers(),
@@ -233,10 +233,10 @@ class HuggingFaceProvider(LLMProvider):
     def _endpoint_url(self) -> str:
         return settings.huggingface_base_url.rstrip("/")
 
-    def _timeout(self) -> httpx.Timeout:
+    def _timeout(self, *, streaming: bool) -> httpx.Timeout:
         return httpx.Timeout(
             connect=settings.llm_connect_timeout_seconds,
-            read=min(settings.llm_first_token_timeout_seconds, 4.0),
+            read=min(settings.llm_first_token_timeout_seconds, 4.0) if streaming else settings.llm_total_timeout_seconds,
             write=settings.llm_total_timeout_seconds,
             pool=settings.llm_total_timeout_seconds,
         )

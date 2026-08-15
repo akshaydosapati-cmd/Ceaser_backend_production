@@ -37,12 +37,47 @@ def ai_error_from_status(
     provider: str,
     category: str = "generation",
 ) -> AIServiceUnavailableError:
+    if status_code in {401, 403}:
+        return AIServiceUnavailableError(
+            f"{provider} authentication failed",
+            retryable=False,
+            provider=provider,
+            category="authentication",
+        )
+    if status_code == 429:
+        return AIServiceUnavailableError(
+            f"{provider} rate limited",
+            retryable=True,
+            provider=provider,
+            category="rate_limit",
+        )
+    if status_code in {408, 504}:
+        return AIServiceUnavailableError(
+            f"{provider} request timed out",
+            retryable=True,
+            provider=provider,
+            category="timeout",
+        )
+    if status_code == 404:
+        return AIServiceUnavailableError(
+            f"{provider} model or endpoint unavailable",
+            retryable=False,
+            provider=provider,
+            category="model_unavailable",
+        )
+    if status_code in {400, 413, 422}:
+        return AIServiceUnavailableError(
+            f"{provider} rejected the request",
+            retryable=False,
+            provider=provider,
+            category="invalid_request",
+        )
     retryable = status_code in RETRYABLE_STATUS_CODES
     if status_code in NON_RETRYABLE_STATUS_CODES:
         retryable = False
     if _looks_like_policy_or_prompt_error(body):
         retryable = False
-    detail = body or f"{provider} returned HTTP {status_code}"
+    detail = f"{provider} returned HTTP {status_code}"
     return AIServiceUnavailableError(detail, retryable=retryable, provider=provider, category=category)
 
 

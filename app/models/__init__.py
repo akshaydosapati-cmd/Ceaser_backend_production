@@ -17,11 +17,13 @@ from app.models.commercial import (
     VerificationAttempt,
 )
 from app.models.conversation import Conversation, Message
-from app.models.desktop import DesktopAuthCode, DesktopCloudResource, DesktopDevice, DesktopRefreshSession
+from app.models.cloud_runtime import CloudArtifact, CloudCheckpoint, CloudJob, CloudJobEvent, CloudWorkspace
+from app.models.desktop import DesktopAuthCode, DesktopCloudResource, DesktopCommand, DesktopDevice, DesktopRefreshSession
 from app.models.draft import Draft, DraftHistory
 from app.models.file import File
 from app.models.generated_document import AgentActivity, GeneratedDocument
 from app.models.integration import Integration
+from app.models.social_publish import SocialPublishTask
 from app.models.knowledge import ContextRun, KnowledgeChunk, KnowledgeRetrievalLog, KnowledgeSource
 from app.models.memory import Memory
 from app.models.profile import Profile
@@ -42,8 +44,14 @@ __all__ = [
     "BillingInvoice",
     "BillingPayment",
     "Conversation",
+    "CloudArtifact",
+    "CloudCheckpoint",
+    "CloudJob",
+    "CloudJobEvent",
+    "CloudWorkspace",
     "DesktopAuthCode",
     "DesktopCloudResource",
+    "DesktopCommand",
     "DesktopDevice",
     "DesktopRefreshSession",
     "Draft",
@@ -75,4 +83,5 @@ __all__ = [
     "VoiceSettings",
     "WorkflowRun",
     "WorkflowStep",
+    "SocialPublishTask",
 ]

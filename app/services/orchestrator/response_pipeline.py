@@ -6,6 +6,7 @@ from time import perf_counter
 from typing import Any
 
 from app.intelligence.ai.sync import generate_text_sync, stream_text
+from app.intelligence.ai.model_router import request_for_agents, request_for_chat
 from app.services.llm.provider import LLMProvider
 
 
@@ -15,8 +16,9 @@ class ResponsePipeline:
 
     def generate(self, message: str, context: dict) -> str:
         instructions, context_text = self._build_prompt(message=message, context=context)
+        model_request = self._model_request(message=message, context=context, streaming=False, context_text=context_text)
         try:
-            response = generate_text_sync(instructions=instructions, input_text=context_text)
+            response = generate_text_sync(instructions=instructions, input_text=context_text, model_request=model_request)
             return self.normalize_structured_response(response, project_report=self._is_project_report_context(context)) if self.requires_structured_response(context) else response
         except Exception:
             if self.provider:
@@ -26,14 +28,25 @@ class ResponsePipeline:
     async def stream(self, message: str, context: dict, *, trace: dict[str, Any] | None = None) -> AsyncIterator[str]:
         prompt_started = perf_counter()
         instructions, context_text = self._build_prompt(message=message, context=context)
+        model_request = self._model_request(message=message, context=context, streaming=True, context_text=context_text)
         output_budget = self._stream_output_budget(message=message, context=context)
         if trace is not None:
             trace["context_tokens"] = self._estimate_tokens(f"{instructions}\n\n{context_text}")
             trace["prompt_tokens"] = trace["context_tokens"]
             trace["prompt_build_ms"] = round((perf_counter() - prompt_started) * 1000, 2)
             trace["max_output_tokens"] = output_budget
-        async for chunk in stream_text(instructions=instructions, input_text=context_text, max_output_tokens=output_budget, trace=trace):
+        async for chunk in stream_text(instructions=instructions, input_text=context_text, max_output_tokens=output_budget, trace=trace, model_request=model_request):
             yield chunk
+
+    @staticmethod
+    def _model_request(*, message: str, context: dict, streaming: bool, context_text: str):
+        merged = context.get("merged_contributions", {}) if isinstance(context, dict) else {}
+        selected = merged.get("selected_agents", []) if isinstance(merged, dict) else []
+        if selected:
+            return request_for_agents([str(item).lower() for item in selected], streaming=streaming, context_size_estimate=max(1, len(context_text) // 4))
+        normalized = message.lower()
+        task_type = "reasoning" if any(term in normalized for term in ("compare", "strategy", "analyze", "analyse", "trade-off", "why")) else "general"
+        return request_for_chat(streaming=streaming, context_size_estimate=max(1, len(context_text) // 4), task_type=task_type)
 
     @staticmethod
     def _stream_output_budget(*, message: str, context: dict) -> int:
@@ -116,7 +129,8 @@ class ResponsePipeline:
             )
             return instructions, context_text
 
-        if retrieval_scope == "none" and not documents and not memories and not evidence and not research:
+        specialist_plan = merged_contributions.get("specialist_plan") if isinstance(merged_contributions, dict) else None
+        if retrieval_scope == "none" and not documents and not memories and not evidence and not research and not specialist_plan:
             instructions = (
                 "You are CEASER. Answer the latest user request directly, accurately, and concisely. "
                 "If the user explicitly names a new subject, switch to it without discussing conversation management. "
@@ -176,7 +190,7 @@ class ResponsePipeline:
         """Friday returns data that CEASER can validate and render as UI."""
         _ = message
         return (
-            " You are Friday, CEASER's Business Strategy Agent. Your response is consumed by the CEASER frontend. "
+            " You are Friday, CEASER's Productivity and Personal Execution specialist. Your response is consumed by the CEASER frontend. "
             "Return valid JSON only. Do not include Markdown, headings, prose before or after the JSON, Markdown tables, or decorative explanations. "
             "Always return this exact top-level shape: "
             '{"type":"answer|project|research|strategy|plan|document_analysis|business_analysis|task_plan|comparison|workflow|report",'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import base64
 import logging
 import re
 from urllib.parse import urlencode
@@ -200,6 +201,52 @@ class GitHubProvider(BaseIntegrationProvider):
         with httpx.Client(timeout=16) as client:
             pull_requests = self._recent_items(client, headers, repo.get("full_name"), "pulls", params={"state": "open"})
         return {"repository": repo, "pull_requests": pull_requests}
+
+    def create_repository(self, integration: Integration, name: str, private: bool = True, description: str | None = None, **_: object) -> dict:
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(name or "").strip()).strip("-.")[:100]
+        if not safe_name:
+            raise ValueError("repository_name_required")
+        with httpx.Client(timeout=20) as client:
+            response = client.post(f"{self.api_base_url}/user/repos", headers=self._api_headers(integration.access_token), json={"name": safe_name, "private": bool(private), "description": (description or "")[:350]})
+            if response.status_code == 422:
+                raise ValueError("repository_exists")
+            response.raise_for_status()
+            repo = self._compact_repo(response.json())
+        return {"repository": repo, "verified": bool(repo.get("full_name")), "visibility": "private" if private else "public"}
+
+    def push_files(self, integration: Integration, repository: str, files: list[dict], branch: str = "main", message: str = "CEASER project update", **_: object) -> dict:
+        full_name = str(repository or "").strip().strip("/")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name):
+            raise ValueError("repository_not_found")
+        if not files or len(files) > 500:
+            raise ValueError("invalid_project_export")
+        headers = self._api_headers(integration.access_token)
+        updated = []
+        with httpx.Client(timeout=30) as client:
+            for item in files:
+                relative = str(item.get("path") or "").replace("\\", "/").lstrip("/")
+                if not relative or ".." in relative.split("/") or re.search(r"(^|/)\.env(?:\.|$)|private.?key|id_rsa|id_ed25519", relative, re.I):
+                    continue
+                content = str(item.get("content") or "")
+                if len(content.encode("utf-8")) > 524288:
+                    continue
+                endpoint = f"{self.api_base_url}/repos/{full_name}/contents/{relative}"
+                existing = client.get(endpoint, headers=headers, params={"ref": branch})
+                payload = {"message": str(message)[:200], "content": base64.b64encode(content.encode("utf-8")).decode("ascii"), "branch": branch}
+                if existing.status_code == 200:
+                    payload["sha"] = existing.json().get("sha")
+                elif existing.status_code not in {404}:
+                    existing.raise_for_status()
+                response = client.put(endpoint, headers=headers, json=payload)
+                if response.status_code in {401, 403}:
+                    raise PermissionError("github_unauthorized")
+                if response.status_code == 409:
+                    raise ValueError("branch_conflict")
+                response.raise_for_status()
+                updated.append({"path": relative, "commit_sha": ((response.json().get("commit") or {}).get("sha"))})
+            verification = client.get(f"{self.api_base_url}/repos/{full_name}/commits/{branch}", headers=headers)
+            verification.raise_for_status()
+        return {"repository": full_name, "branch": branch, "files_updated": len(updated), "files": updated, "revision": verification.json().get("sha"), "verified": bool(updated and verification.json().get("sha"))}
 
     def _repo_item(self, client: httpx.Client, headers: dict[str, str], repo: dict) -> dict:
         full_name = repo.get("full_name")

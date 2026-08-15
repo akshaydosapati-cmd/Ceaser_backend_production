@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from urllib.parse import urlparse
+from uuid import uuid4
+
+from app.schemas.rich_response import ActivityEvent, CeaserRichResponse, ResponseAction, ResponseBlock, ResponseSource
+
+class RichResponseService:
+    """Compatibility adapter from existing truthful results into one V1 response contract."""
+
+    SAFE_ACTIONS={"project.open_vscode","project.list_files","git.commit","git.push","cloud.download","social.prepare","workflow.continue","browser.retry"}
+
+    @classmethod
+    def compose(cls,payload:dict,*,user_id:str,task_id:str|None=None)->CeaserRichResponse:
+        text=str(payload.get("response") or "")
+        status=cls._status(payload)
+        blocks=[ResponseBlock(type="markdown",content=text)] if text else []
+        research=payload.get("research") or {}
+        sources=[]
+        for item in research.get("sources") or []:
+            url=str(item.get("url") or "")
+            if not url.startswith(("http://","https://")):continue
+            sources.append(ResponseSource(title=str(item.get("title") or url),url=url,domain=urlparse(url).netloc,publisher=item.get("publisher") or item.get("source"),snippet=item.get("snippet")))
+        for item in research.get("images") or []:
+            image_url=str(item.get("image_url") or "");source_url=str(item.get("url") or "")
+            if image_url.startswith(("http://","https://")) and source_url.startswith(("http://","https://")):
+                blocks.append(ResponseBlock(type="image",url=image_url,thumbnail_url=image_url,source_url=source_url,source_name=str(item.get("source") or urlparse(source_url).netloc),alt_text=str(item.get("title") or "Relevant image")))
+        social=((payload.get("metadata") or {}).get("social_publish") or (payload.get("response_metadata") or {}).get("social_publish"))
+        if isinstance(social,dict) and social.get("preview"):
+            blocks.append(ResponseBlock(type="status",title="Social post preview",content=str(social["preview"]),items=[social["preview"]]))
+        project=payload.get("project_result") or payload.get("bolt_result")
+        if isinstance(project,dict):
+            actions=cls._actions(project.get("actions") or [])
+            blocks.append(ResponseBlock(type="project",title=str(project.get("name") or "Project"),project={key:project.get(key) for key in ("project_id","name","framework","language","status","files_changed","build_status","test_status","git_revision","github_repository")},actions=actions))
+        activity=[ActivityEvent(task_id=task_id or str(payload.get("request_id") or uuid4()),agent=str((payload.get("selected_agents") or ["CEASER"])[0]),category="response",stage="completed" if status=="completed" else status,status="completed" if status=="completed" else "waiting" if status.startswith("waiting") else "failed" if status=="failed" else "running",title=cls._activity_title(payload,status),safe_metadata={"source_count":len(sources)})]
+        return CeaserRichResponse(conversation_id=payload.get("conversation_id"),message_id=payload.get("message_id"),status=status,primary_text=text,blocks=blocks,sources=sources,actions=[],activity=activity,metadata={"user_scoped":True,"contract_version":"1.0"})
+
+    @classmethod
+    def _actions(cls,items):
+        result=[]
+        for item in items:
+            capability=str(item.get("capability") or "")
+            if capability in cls.SAFE_ACTIONS:result.append(ResponseAction(label=str(item.get("label") or capability),capability=capability,arguments=item.get("arguments") or {},requires_confirmation=bool(item.get("requires_confirmation")),enabled=True))
+        return result
+
+    @staticmethod
+    def _status(payload):
+        social=((payload.get("metadata") or {}).get("social_publish") or {})
+        raw=str(social.get("status") or payload.get("status") or "completed").lower()
+        return raw if raw in {"streaming","working","waiting_for_user","waiting_for_confirmation","completed","partial","failed","cancelled"} else "completed"
+
+    @staticmethod
+    def _activity_title(payload,status):
+        agents=payload.get("selected_agents") or []
+        return f"{agents[0]} completed the response." if agents and status=="completed" else "CEASER is waiting for confirmation." if status=="waiting_for_confirmation" else "CEASER completed the response."
+
+    @staticmethod
+    def normalize_activity(action:str,*,task_id:str,metadata:dict|None=None)->ActivityEvent:
+        safe=metadata or {};prefix=action.split(".",1)[0].lower();agent={"bolt":"Bolt","browser":"Friday","social":"Nova","workflow":"CEASER","agent":"CEASER","device":"CEASER"}.get(prefix,"CEASER")
+        tail=action.split(".")[-1].replace("_"," ");status="failed" if "fail" in action else "cancelled" if "cancel" in action else "waiting" if "waiting" in action or "confirmation" in action else "completed" if any(word in action for word in ("completed","verified","passed")) else "running"
+        allowed={key:value for key,value in safe.items() if key in {"step","progress","platform","filename","capability","device_id","source_count","files_changed","build_status","test_status"}}
+        return ActivityEvent(task_id=task_id,agent=agent,category=prefix,stage=tail,status=status,title=f"{agent}: {tail.title()}",progress=allowed.pop("progress",None),safe_metadata=allowed)
+
+class AssetReferenceService:
+    """Resolves stable CEASER file/asset IDs with mandatory user ownership."""
+    def __init__(self,db):self.db=db
+    def resolve(self,*,user_id:str,asset_id:str):
+        from app.models.file import File
+        return self.db.query(File).filter(File.id==asset_id,File.user_id==user_id).first()

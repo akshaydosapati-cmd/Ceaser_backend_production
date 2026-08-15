@@ -2,6 +2,8 @@ import os
 from collections.abc import Generator
 from uuid import uuid4
 
+import pytest
+
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["GEMINI_API_KEY"] = ""
 
@@ -20,7 +22,16 @@ from app.services.workflows.workflow_router import WorkflowRouter
 
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+
+@pytest.fixture(autouse=True)
+def deterministic_workflow_provider(monkeypatch):
+    def fake_generate(_self, message: str, context: dict) -> str:
+        profile = context.get("agent_profile") or {}
+        return f"{profile.get('name', 'Specialist')} prepared a verified plan for: {message}"
+
+    monkeypatch.setattr("app.services.llm.workflow_llm_provider.WorkflowLLMProvider.generate_response", fake_generate)
 
 
 def override_db() -> Generator[Session, None, None]:
@@ -57,11 +68,11 @@ def enabled_agents() -> list[dict]:
 
 def test_workflow_router_selects_expected_templates() -> None:
     router = WorkflowRouter()
-    assert router.route("Research AI healthcare startups", enabled_agents()).agents == ["Nova"]
-    assert router.route("Create a startup strategy", enabled_agents()).agents == ["Nova", "Zeus"]
-    assert router.route("Help me launch a healthcare startup", enabled_agents()).agents == ["Nova", "Zeus", "Bolt", "Friday"]
-    assert router.route("Help me prepare for my exam", enabled_agents()).agents == ["Nova", "Alex"]
-    assert router.route("Design architecture for a SaaS", enabled_agents()).agents == ["Atlas"]
+    assert router.route("Research AI healthcare startups", enabled_agents()).agents == ["Alex"]
+    assert router.route("Create a startup strategy", enabled_agents()).agents == ["Alex", "Zeus"]
+    assert router.route("Help me launch a healthcare startup", enabled_agents()).agents == ["Alex", "Zeus", "Bolt"]
+    assert router.route("Help me prepare for my exam", enabled_agents()).agents == ["Alex", "Friday"]
+    assert router.route("Design architecture for a SaaS", enabled_agents()).agents == ["Bolt"]
 
 
 def test_workflow_api_start_history_steps_and_cancel() -> None:
@@ -73,9 +84,9 @@ def test_workflow_api_start_history_steps_and_cancel() -> None:
     assert start.status_code == 200
     payload = start.json()
     assert payload["workflow_type"] == "startup"
-    assert payload["selected_agents"] == ["Nova", "Zeus", "Bolt", "Friday"]
+    assert payload["selected_agents"] == ["Alex", "Zeus", "Bolt"]
     assert payload["status"] == "completed"
-    assert len(payload["steps"]) == 4
+    assert len(payload["steps"]) == 3
 
     history = client.get("/workflows")
     assert history.status_code == 200
@@ -84,7 +95,7 @@ def test_workflow_api_start_history_steps_and_cancel() -> None:
 
     steps = client.get(f"/workflows/{workflow_id}/steps")
     assert steps.status_code == 200
-    assert [step["agent_name"] for step in steps.json()] == ["Nova", "Zeus", "Bolt", "Friday"]
+    assert [step["agent_name"] for step in steps.json()] == ["Alex", "Zeus", "Bolt"]
 
     cancel = client.post(f"/workflows/{workflow_id}/cancel")
     assert cancel.status_code == 200
@@ -100,6 +111,5 @@ def test_ceaser_chat_returns_workflow_metadata() -> None:
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["workflow"]["type"] == "execution"
-    assert payload["selected_agents"] == ["Nova", "Zeus", "Bolt"]
-    assert "Execution Workflow" in payload["response"]
+    assert payload["workflow"] is None
+    assert payload["response"]

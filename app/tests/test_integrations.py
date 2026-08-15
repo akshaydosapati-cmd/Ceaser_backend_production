@@ -67,30 +67,26 @@ def test_integration_provider_registry_and_dashboard_records() -> None:
         "google-tasks",
         "google-classroom",
         "notion",
+        "github",
     }
     assert all(provider["read_only"] for provider in providers)
 
     integrations_response = client.get("/integrations")
     assert integrations_response.status_code == 200
     integrations = integrations_response.json()
-    assert len(integrations) == 6
+    assert len(integrations) == 7
     assert all(not item["connected"] for item in integrations)
 
 
 def test_connect_without_oauth_credentials_marks_provider_actionable() -> None:
     response = client.post("/integrations/google-calendar/connect", json={})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["requires_credentials"] is True
-    assert payload["integration"]["status"] == "credentials_required"
+    assert response.status_code == 404
+    assert response.json()["detail"] == "This integration is being prepared for verified access."
 
-    status_response = client.get("/integrations/google-calendar/status")
-    assert status_response.status_code == 200
-    assert status_response.json()["status"] == "credentials_required"
-
-    disconnect_response = client.post("/integrations/google-calendar/disconnect")
-    assert disconnect_response.status_code == 200
-    assert disconnect_response.json()["status"] == "not_connected"
+    integrations = client.get("/integrations").json()
+    calendar = next(item for item in integrations if item["id"] == "google-calendar")
+    assert calendar["status"] == "coming_soon"
+    assert calendar["connected"] is False
 
 
 def test_integration_tokens_are_encrypted_at_model_layer() -> None:

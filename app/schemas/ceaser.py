@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+from app.schemas.rich_response import CeaserRichResponse
 
 
 class CeaserChatRequest(BaseModel):
@@ -13,6 +14,8 @@ class CeaserChatRequest(BaseModel):
     source: str | None = None
     voice: bool = False
     original_message: str | None = None
+    device_id: str | None = Field(default=None, max_length=120)
+    desktop_file_context: dict | None = None
 
 
 class RankedMemory(BaseModel):
@@ -99,3 +102,4 @@ class CeaserChatResponse(BaseModel):
     context_summary: dict
     suggestions: list[SuggestionResponse] = Field(default_factory=list)
     response: str
+    rich_response: CeaserRichResponse | None = None

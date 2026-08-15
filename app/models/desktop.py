@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database.base import Base
@@ -46,6 +46,31 @@ class DesktopDevice(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     app_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gateway_session_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    gateway_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gateway_last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gateway_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    capabilities_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+
+
+class DesktopCommand(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "desktop_commands"
+    __table_args__ = (UniqueConstraint("user_id", "request_id", name="uq_desktop_commands_user_request"),)
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    device_id: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
+    request_id: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
+    task_id: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    capability: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
+    request_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True, nullable=False)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    safe_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DesktopCloudResource(UUIDPrimaryKeyMixin, TimestampMixin, Base):

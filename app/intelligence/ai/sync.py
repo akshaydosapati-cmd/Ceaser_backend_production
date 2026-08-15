@@ -9,33 +9,41 @@ from typing import Any
 
 from app.core.config.settings import settings
 from app.intelligence.ai.errors import AIServiceUnavailableError
+from app.intelligence.ai.model_router import ModelRequest, request_for_chat
 
 logger = logging.getLogger(__name__)
 
 
-def generate_text_sync(*, instructions: str, input_text: str, temperature: float | None = None, max_output_tokens: int | None = None) -> str:
+def generate_text_sync(*, instructions: str, input_text: str, temperature: float | None = None, max_output_tokens: int | None = None, model_request: ModelRequest | None = None) -> str:
     from app.intelligence.ai.ai_provider_service import ai_provider_service
 
     async def _generate() -> str:
         last_error: Exception | None = None
-        attempts = ai_provider_service.llm.candidates(max_count=max(1, settings.llm_max_fallbacks + 1))
+        request = model_request or request_for_chat(context_size_estimate=max(1, len(input_text) // 4))
+        attempts = ai_provider_service.llm.model_candidates(request, max_count=max(1, settings.llm_max_fallbacks + 1))
         if not attempts:
             raise AIServiceUnavailableError("No LLM provider is configured.", retryable=False, category="configuration")
-        for index, (provider_name, provider) in enumerate(attempts):
+        for index, (selection, provider) in enumerate(attempts):
+            provider_name = selection.model.provider_id
             started = perf_counter()
             try:
                 text = await provider.generate(
                     instructions=instructions,
                     input_text=input_text,
+                    model=selection.model.provider_model_name,
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
                 )
-                ai_provider_service.llm.router.record_success(provider_name, total_ms=(perf_counter() - started) * 1000)
+                ai_provider_service.llm.router.record_success(
+                    provider_name,
+                    model_id=selection.model.model_id,
+                    total_ms=(perf_counter() - started) * 1000,
+                )
                 logger.info("AI provider succeeded: provider=%s total_ms=%s", provider_name, round((perf_counter() - started) * 1000))
                 return text
             except AIServiceUnavailableError as exc:
                 last_error = exc
-                ai_provider_service.llm.router.record_failure(provider_name, exc)
+                ai_provider_service.llm.router.record_failure(provider_name, exc, model_id=selection.model.model_id)
                 logger.warning(
                     "AI provider failed: provider=%s retryable=%s category=%s detail=%s",
                     provider_name,
@@ -47,7 +55,7 @@ def generate_text_sync(*, instructions: str, input_text: str, temperature: float
                     break
             except Exception as exc:  # noqa: BLE001
                 last_error = AIServiceUnavailableError(repr(exc), retryable=True, provider=provider_name, category="unexpected")
-                ai_provider_service.llm.router.record_failure(provider_name, last_error)
+                ai_provider_service.llm.router.record_failure(provider_name, last_error, model_id=selection.model.model_id)
                 logger.warning("AI provider failed unexpectedly: provider=%s error=%s", provider_name, repr(exc))
                 if index >= len(attempts) - 1:
                     break
@@ -63,21 +71,24 @@ async def stream_text(
     temperature: float | None = None,
     max_output_tokens: int | None = None,
     trace: dict[str, Any] | None = None,
+    model_request: ModelRequest | None = None,
 ) -> AsyncIterator[str]:
     from app.intelligence.ai.ai_provider_service import ai_provider_service
 
     last_error: Exception | None = None
-    attempts = ai_provider_service.llm.candidates(max_count=max(1, settings.llm_max_fallbacks + 1))
+    request = model_request or request_for_chat(streaming=True, context_size_estimate=max(1, len(input_text) // 4))
+    attempts = ai_provider_service.llm.model_candidates(request, max_count=max(1, settings.llm_max_fallbacks + 1))
     if not attempts:
         raise AIServiceUnavailableError("No LLM provider is configured.", retryable=False, category="configuration")
 
-    for index, (provider_name, provider) in enumerate(attempts):
+    for index, (selection, provider) in enumerate(attempts):
+        provider_name = selection.model.provider_id
         started = perf_counter()
         first_token_ms: float | None = None
         try:
             if trace is not None:
                 trace["provider"] = provider_name
-                trace["model"] = getattr(provider, "default_model", None)
+                trace["model"] = selection.model.model_id
                 trace["fallback_used"] = index > 0
                 trace["fallback_started"] = index > 0
                 trace["fallback_provider"] = provider_name if index > 0 else None
@@ -105,7 +116,7 @@ async def stream_text(
             async for chunk in provider.stream(
                 instructions=instructions,
                 input_text=input_text,
-                model=None,
+                model=selection.model.provider_model_name,
                 max_output_tokens=max_output_tokens,
                 trace=trace,
             ):
@@ -132,6 +143,7 @@ async def stream_text(
             total_ms = (perf_counter() - started) * 1000
             ai_provider_service.llm.router.record_success(
                 provider_name,
+                model_id=selection.model.model_id,
                 total_ms=total_ms,
                 first_token_ms=first_token_ms,
             )
@@ -146,7 +158,7 @@ async def stream_text(
             return
         except AIServiceUnavailableError as exc:
             last_error = exc
-            ai_provider_service.llm.router.record_failure(provider_name, exc)
+            ai_provider_service.llm.router.record_failure(provider_name, exc, model_id=selection.model.model_id)
             if trace is not None:
                 trace.setdefault("failed_attempts", []).append(
                     {
@@ -167,7 +179,7 @@ async def stream_text(
                 break
         except Exception as exc:  # noqa: BLE001
             last_error = AIServiceUnavailableError(repr(exc), retryable=True, provider=provider_name, category="unexpected")
-            ai_provider_service.llm.router.record_failure(provider_name, last_error)
+            ai_provider_service.llm.router.record_failure(provider_name, last_error, model_id=selection.model.model_id)
             if trace is not None:
                 trace.setdefault("failed_attempts", []).append(
                     {

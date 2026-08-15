@@ -169,12 +169,13 @@ class DesktopAuthService:
         return self.db.query(DesktopDevice).filter(DesktopDevice.user_id == user_id, DesktopDevice.device_id == device_id).first()
 
     def _session_payload(self, user: User, device_id: str, refresh_token: str) -> dict[str, Any]:
+        display_name = user.profile.display_name.strip() if user.profile and user.profile.display_name else None
         return {
             "access_token": create_desktop_access_token(user, device_id),
             "refresh_token": refresh_token,
             "expires_in": ACCESS_TOKEN_SECONDS,
             "token_type": "bearer",
-            "user": {"id": user.id, "email": user.email},
+            "user": {"id": user.id, "email": user.email, "display_name": display_name},
         }
 
 

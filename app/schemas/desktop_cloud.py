@@ -22,6 +22,9 @@ class DesktopDeviceRead(BaseModel):
     last_seen_at: datetime | None = None
     revoked_at: datetime | None = None
     status: str
+    gateway_status: str = "offline"
+    gateway_last_heartbeat_at: datetime | None = None
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class DesktopAuthorizeRequest(DesktopDevicePayload):

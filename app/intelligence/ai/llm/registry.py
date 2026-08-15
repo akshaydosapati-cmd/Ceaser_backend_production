@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from app.core.config.settings import settings
 from app.intelligence.ai.llm.base import LLMProvider
-from app.intelligence.ai.llm.router import AdaptiveLLMRouter
+from app.intelligence.ai.model_router import ModelRequest, ModelRouter
 
 
 class LLMRegistry:
     def __init__(self) -> None:
-        self.router = AdaptiveLLMRouter()
+        self.router = ModelRouter()
 
-    def candidates(self, max_count: int = 2) -> list[tuple[str, LLMProvider]]:
-        return [(name, provider) for name, provider in self.router.candidates(max_count=max_count)]
+    def candidates(self, max_count: int = 2, request: ModelRequest | None = None) -> list[tuple[str, LLMProvider]]:
+        return [(name, provider) for name, provider in self.router.candidates(max_count=max_count, request=request)]
+
+    def model_candidates(self, request: ModelRequest, max_count: int = 2):
+        return self.router.model_candidates(request, max_count=max_count)
 
     def production(self) -> LLMProvider:
         candidates = self.candidates(max_count=1)

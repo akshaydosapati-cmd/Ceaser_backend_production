@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.schemas.user import UserRead
 
@@ -58,3 +58,14 @@ class AuthSession(BaseModel):
 class CurrentUser(BaseModel):
     id: str
     email: EmailStr
+    display_name: str | None = None
+    use_case: str | None = None
+    onboarding_data: dict = Field(default_factory=dict)
+    onboarding_completed: bool = False
+
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str
+    use_case: str | None = None
+    onboarding_data: dict | None = None
+    onboarding_completed: bool | None = None

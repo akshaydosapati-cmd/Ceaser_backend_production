@@ -18,6 +18,7 @@ from app.api.agents.routes import router as agents_router
 from app.api.billing.routes import router as billing_router
 from app.api.capabilities.routes import router as capabilities_router
 from app.api.ceaser.routes import router as ceaser_router
+from app.api.cloud.routes import router as cloud_router
 from app.api.commercial.routes import router as commercial_router
 from app.api.conversations.routes import router as conversations_router
 from app.api.documents.routes import router as documents_router
@@ -59,6 +60,11 @@ def configure_application_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configuration_errors = settings.production_configuration_errors()
+    if configuration_errors:
+        raise RuntimeError(
+            "Unsafe or incomplete production configuration: " + ", ".join(configuration_errors)
+        )
     logger.info(
         "ceaser_llm_configuration primary=%s provider_order=%s openai_key_configured=%s",
         settings.llm_provider,
@@ -120,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(messages_router)
     app.include_router(chat_router)
     app.include_router(ceaser_router)
+    app.include_router(cloud_router)
     app.include_router(billing_router)
     app.include_router(commercial_router)
     app.include_router(memories_router)

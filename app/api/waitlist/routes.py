@@ -46,7 +46,7 @@ def join_waitlist(payload: WaitlistJoinRequest, db: Annotated[Session, Depends(g
                 VALUES (:id, :email, NULL, 'website', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """
             ),
-            {"id": uuid4(), "email": email},
+            {"id": str(uuid4()), "email": email},
         )
         db.commit()
     except Exception:

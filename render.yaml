@@ -10,6 +10,12 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
+      - key: CEASER_ENV
+        value: production
+      - key: CEASER_LOCAL_CODING_ENABLED
+        value: "true"
+      - key: CEASER_CLOUD_CODING_ENABLED
+        value: "false"
       - key: DEV_AUTH_BYPASS
         value: "false"
       - key: AUTOMATION_WORKER_ENABLED
@@ -30,4 +36,54 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: NVIDIA_MODEL
+        value: nvidia/nemotron-3-ultra-550b-a55b
+  - type: worker
+    name: ceaser-cloud-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python scripts/run_cloud_worker.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: CEASER_ENV
+        value: production
+      - key: CEASER_LOCAL_CODING_ENABLED
+        value: "true"
+      - key: CEASER_CLOUD_CODING_ENABLED
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: NVIDIA_MODEL
+        value: nvidia/nemotron-3-ultra-550b-a55b
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CLOUD_WORKER_ID
+        value: ceaser-render-worker
+      # Render's native worker has no container isolation. Keep coding builds
+      # fail-closed until this worker is replaced by a sandbox-capable service.
+      - key: SANDBOX_PROVIDER
+        value: unavailable

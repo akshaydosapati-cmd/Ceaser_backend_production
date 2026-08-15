@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket
 from sqlalchemy.orm import Session
 
 from app.core.database.session import get_db
@@ -14,6 +15,9 @@ from app.services.audit_service import AuditService
 from app.services.desktop_auth_service import DesktopAuthService
 from app.services.desktop_cloud_service import DesktopCloudService
 from app.services.desktop_intent_classifier import DesktopIntentClassifier
+from app.agents.v2 import DeviceCapabilityRequest
+from app.services.device_gateway import device_gateway
+from app.services.device_gateway_service import DeviceGatewayService
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
 
@@ -51,10 +55,44 @@ def list_desktop_devices(user: Annotated[User, Depends(get_current_user)], db: A
 
 
 @router.delete("/devices/{device_id}")
-def revoke_desktop_device(device_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+async def revoke_desktop_device(device_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
     DesktopAuthService(db).revoke(user, device_id=device_id)
     AuditService(db).record(user_id=user.id, action="desktop_device_revoked", resource_type="desktop", resource_id=device_id)
     return {"status": "ok"}
+
+
+@router.websocket("/gateway")
+async def desktop_gateway(websocket: WebSocket):
+    await device_gateway.handle(websocket)
+
+
+@router.post("/commands", status_code=202)
+async def submit_desktop_command(
+    payload: DeviceCapabilityRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    wait_seconds: float = Query(default=0, ge=0, le=30),
+):
+    try:
+        command = DeviceGatewayService(db).submit(user, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    while wait_seconds and asyncio.get_running_loop().time() < deadline and command.status not in ("COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"):
+        await asyncio.sleep(0.1)
+        db.expire_all()
+        command = DeviceGatewayService(db).owned_command(user, payload.request_id)
+    return _command_read(command)
+
+
+@router.get("/commands/{request_id}")
+def get_desktop_command(request_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    command = DeviceGatewayService(db).owned_command(user, request_id)
+    if not command:
+        raise HTTPException(status_code=404, detail="Desktop command not found")
+    return _command_read(command)
 
 
 @router.post("/cloud/{action}", response_model=DesktopCloudResponse)
@@ -132,4 +170,16 @@ def _device_read(device) -> dict:
         "last_seen_at": device.last_seen_at,
         "revoked_at": device.revoked_at,
         "status": "revoked" if device.revoked_at else "connected",
+        "gateway_status": "online" if DeviceGatewayService.is_online(device) else "offline",
+        "gateway_last_heartbeat_at": device.gateway_last_heartbeat_at,
+        "capabilities": device.capabilities_json or [],
+    }
+
+
+def _command_read(command) -> dict:
+    return {
+        "id": command.id, "request_id": command.request_id, "task_id": command.task_id,
+        "device_id": command.device_id, "capability": command.capability, "status": command.status,
+        "result": command.result_json, "error": command.safe_error, "created_at": command.created_at,
+        "delivered_at": command.delivered_at, "completed_at": command.completed_at, "expires_at": command.expires_at,
     }

@@ -19,6 +19,7 @@ from app.schemas.ceaser import CeaserChatRequest, CeaserChatResponse
 from app.services.audit_service import AuditService
 from app.services.background_task_service import background_task_store
 from app.services.orchestrator import CeaserOrchestrator
+from app.services.rich_response_service import RichResponseService
 
 router = APIRouter(prefix="/ceaser", tags=["ceaser"])
 logger = logging.getLogger(__name__)
@@ -64,7 +65,10 @@ def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_cu
             file_ids=payload.file_ids,
             request_id=payload.request_id,
             parent_message_id=payload.parent_message_id,
+            device_id=payload.device_id,
+            desktop_file_context=payload.desktop_file_context,
         )
+        response["rich_response"] = RichResponseService.compose(response,user_id=user.id,task_id=payload.request_id).model_dump(mode="json")
         AuditService(db).record(
             user_id=user.id,
             action="message_created",
@@ -88,7 +92,7 @@ def _maybe_desktop_fast_response(payload: CeaserChatRequest) -> dict | None:
     normalized = message.lower()
     heavy_terms = (
         "my ", "me ", "project", "file", "document", "pdf", "report", "memory",
-        "notion", "github", "calendar", "task", "email", "mail", "upload",
+        "notion", "github", "calendar", "task", "email", "mail", "upload", "post", "publish",
         "delete", "restore", "rename", "latest", "connected", "workspace",
         "summarize my", "what do i have", "what is my", "who am i",
     )
@@ -177,6 +181,8 @@ def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatReq
             file_ids=payload.file_ids,
             request_id=payload.request_id,
             parent_message_id=payload.parent_message_id,
+            device_id=payload.device_id,
+            desktop_file_context=payload.desktop_file_context,
         )
         background_task_store.set_result(task_id, response)
     except Exception:
@@ -207,6 +213,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
         trace: dict[str, object] = {"request_id": request_id}
         first_sse_token_logged = False
         try:
+            yield event("response.started", {"id": request_id, "status": "streaming", "conversation_id": conversation_id})
+            yield event("activity", {"event_id": f"evt_{request_id}_start", "task_id": request_id, "agent": "CEASER", "category": "response", "stage": "understanding", "status": "running", "title": "Understanding request", "safe_metadata": {}})
             yield event("status", {"state": "received"})
             yield event("status", {"state": "understanding_request"})
             orchestrator = CeaserOrchestrator(db)
@@ -268,6 +276,10 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 )
                 prepared["stream_trace"] = trace
                 response = orchestrator.finalize_stream_response(prepared, prepared["response"])
+                rich = RichResponseService.compose(response,user_id=user_id,task_id=request_id).model_dump(mode="json")
+                response["rich_response"] = rich
+                for block in rich["blocks"]: yield event("block.created", block)
+                yield event("response.completed", rich)
                 yield event("complete", response)
                 logger.info(
                     "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s llm_request_sent_ms=not_applicable first_token_ms=%s last_token_ms=%s",
@@ -316,6 +328,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             trace["total_time_ms"] = round((perf_counter() - started) * 1000, 2)
             prepared["stream_trace"] = trace
             response = orchestrator.finalize_stream_response(prepared, response_text, assistant_message=assistant_message)
+            rich = RichResponseService.compose(response,user_id=user_id,task_id=request_id).model_dump(mode="json")
+            response["rich_response"] = rich
             stage_marks["complete"] = perf_counter()
             logger.info(
                 "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s context_build_ms=%s routing_ms=%s tool_calls_ms=%s llm_request_sent_ms=%s first_token_ms=%s last_token_ms=%s",
@@ -359,12 +373,17 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 resource_id=conversation_id,
                 metadata={"selected_agents": response.get("selected_agents", []), "memory_count": len(response.get("memories_used", []))},
             )
+            for block in rich["blocks"]: yield event("block.created", block)
+            yield event("activity", rich["activity"][0])
+            yield event("response.completed", rich)
             yield event("complete", response)
             logger.info("ceaser_stream_stage request_id=%s stage=request_complete total_ms=%s", request_id, trace.get("total_time_ms"))
         except ValueError as exc:
+            yield event("response.failed", {"id": request_id, "status": "failed", "error": {"category": "validation", "message": str(exc), "retryable": False}})
             yield event("error", {"message": str(exc)})
         except Exception:
             logger.exception("ceaser_chat_stream_failed user_id=%s conversation_id=%s", user_id, conversation_id)
+            yield event("response.failed", {"id": request_id, "status": "failed", "error": {"category": "internal", "message": "We couldn't complete your request. Please try again.", "retryable": True}})
             yield event("error", {"message": "We couldn't complete your request. Please try again."})
 
     # Keep SSE events flowing through hosting proxies as they are produced.

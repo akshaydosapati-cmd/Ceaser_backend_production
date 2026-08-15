@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.intelligence.ai.sync import generate_text_sync
+from app.intelligence.ai.model_router import request_for_agent
 from app.services.llm.provider import LLMProvider
 
 
@@ -24,4 +25,6 @@ class WorkflowLLMProvider(LLMProvider):
                 "Return a concise, useful contribution for this specialist.",
             ]
         )
-        return generate_text_sync(instructions=instructions, input_text=input_text, temperature=0.35, max_output_tokens=900)
+        agent_id = str(profile.get("name") or "").lower()
+        model_request = request_for_agent(agent_id) if agent_id in {"bolt", "alex", "friday", "nova", "zeus", "atlas"} else None
+        return generate_text_sync(instructions=instructions, input_text=input_text, temperature=0.35, max_output_tokens=900, model_request=model_request)

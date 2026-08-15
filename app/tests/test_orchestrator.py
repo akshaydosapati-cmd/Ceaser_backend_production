@@ -173,7 +173,7 @@ def test_orchestrator_returns_brain_payload() -> None:
 
     assert result["scope"] == "personal_ai_os"
     assert "Zeus" in result["selected_agents"]
-    assert "Nova" in result["selected_agents"]
+    assert result["selected_agents"] == ["Zeus"]
     assert result["memories_used"]
     assert result["context_summary"]["memory_count"] >= 1
     assert result["response"]
@@ -198,7 +198,7 @@ def test_orchestrator_extracts_named_research_query(monkeypatch) -> None:
     db.close()
 
     assert captured_queries == ["Clinilocker"]
-    assert result["selected_agents"] == ["Nova"]
+    assert result["selected_agents"] == ["Alex"]
     assert result["research"]["query"] == "Clinilocker"
 
 
@@ -275,5 +275,5 @@ def test_ceaser_chat_endpoint() -> None:
     payload = response.json()
     assert payload["scope"] == "personal_ai_os"
     assert "Zeus" in payload["selected_agents"]
-    assert "Nova" in payload["selected_agents"]
+    assert "Alex" in payload["selected_agents"]
     assert "response" in payload

@@ -22,8 +22,10 @@ from app.schemas.auth import (
     PasswordRecoveryRequest,
     PasswordUpdateRequest,
     PasswordVerificationRequest,
+    ProfileUpdateRequest,
     RefreshSessionRequest,
 )
+from app.models.profile import Profile
 from app.schemas.desktop_cloud import DesktopAuthorizeRequest, DesktopAuthorizeResponse, DesktopExchangeRequest, DesktopRefreshRequest, DesktopRevokeRequest, DesktopSessionResponse
 from app.schemas.user import UserRead
 from app.services.audit_service import AuditService
@@ -316,9 +318,60 @@ async def unenroll_mfa(
 
 @router.get("/me", response_model=CurrentUser)
 def me(user: Annotated[User, Depends(get_current_user)]) -> CurrentUser:
-    return CurrentUser(id=user.id, email=user.email)
+    return current_user_payload(user)
 
 
 @router.get("/session", response_model=CurrentUser)
 def session(user: Annotated[User, Depends(get_current_user)]) -> CurrentUser:
-    return CurrentUser(id=user.id, email=user.email)
+    return current_user_payload(user)
+
+
+@router.patch("/profile", response_model=CurrentUser)
+def update_profile(
+    payload: ProfileUpdateRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> CurrentUser:
+    display_name = " ".join(payload.display_name.split()).strip()
+    if not display_name or len(display_name) > 255:
+        raise HTTPException(status_code=422, detail="Display name must be between 1 and 255 characters")
+    profile = user.profile
+    if profile is None:
+        profile = Profile(user=user)
+        db.add(profile)
+    profile.display_name = display_name
+    if payload.use_case is not None:
+        profile.use_case = payload.use_case.strip()[:50] or None
+    if payload.onboarding_data is not None:
+        profile.onboarding_data = payload.onboarding_data
+    if payload.onboarding_completed is not None:
+        profile.onboarding_completed = payload.onboarding_completed
+    db.commit()
+    db.refresh(user)
+    AuditService(db).record(
+        user_id=user.id,
+        action="profile_updated",
+        resource_type="profile",
+        resource_id=profile.id,
+        metadata={"fields": [
+            field for field, supplied in {
+                "display_name": True,
+                "use_case": payload.use_case is not None,
+                "onboarding_data": payload.onboarding_data is not None,
+                "onboarding_completed": payload.onboarding_completed is not None,
+            }.items() if supplied
+        ]},
+    )
+    return current_user_payload(user)
+
+
+def current_user_payload(user: User) -> CurrentUser:
+    display_name = user.profile.display_name.strip() if user.profile and user.profile.display_name else None
+    return CurrentUser(
+        id=user.id,
+        email=user.email,
+        display_name=display_name,
+        use_case=user.profile.use_case if user.profile else None,
+        onboarding_data=user.profile.onboarding_data or {} if user.profile else {},
+        onboarding_completed=bool(user.profile and user.profile.onboarding_completed),
+    )
