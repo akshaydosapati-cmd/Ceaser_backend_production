@@ -9,6 +9,7 @@ from app.agents.v2.models import VerificationEvidence
 
 @pytest.mark.parametrize(("message", "agent"), [
     ("Build a dental clinic website", "bolt"), ("Fix my React project", "bolt"),
+    ("Write HTML code for a login screen", "bolt"), ("Give me a Python function that validates email addresses", "bolt"),
     ("Research the Indian EV market", "alex"), ("Create campaign concepts", "nova"),
     ("Plan our startup launch strategy", "zeus"), ("Organize these documents", "atlas"),
     ("Plan my work tomorrow", "friday"),

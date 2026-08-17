@@ -7,7 +7,13 @@ from app.agents.v2.models import AgentSelection, ExecutionTarget
 
 class AgentSelector:
     DIRECT = re.compile(r"\b(open|close|launch)\s+(chrome|calculator|settings|explorer)|\b(pause|resume|stop)\s+(music|media)|\bset volume\b", re.I)
-    BOLT = re.compile(r"\b(build|create|develop|implement|code|fix|debug|repair|refactor)\b.*\b(site|website|landing page|app|application|software|saas|project|react|api|code)\b|\bfix my\s+.+project\b", re.I)
+    BOLT = re.compile(
+        r"\b(build|create|develop|implement|code|fix|debug|repair|refactor)\b.*\b(site|website|landing page|app|application|software|saas|project|react|api|code)\b"
+        r"|\bfix my\s+.+project\b"
+        r"|\b(write|generate|show|provide|give|draft|explain|review|optimi[sz]e)\b.{0,80}\b(code|script|function|class|component|query|regex|algorithm|html|css|javascript|typescript|python|java|c\+\+|c#|sql|react|node(?:\.js)?)\b"
+        r"|\b(code|script|function|class|component|html|css|javascript|typescript|python|java|c\+\+|c#|sql|react|node(?:\.js)?)\b.{0,80}\b(for|that|which|to)\b",
+        re.I,
+    )
     ALEX = re.compile(r"\b(research|investigate|compare|find evidence|market research|competitor research)\b", re.I)
     NOVA = re.compile(r"\b(create|write|draft|generate)\b.*\b(campaign|caption|content|post|copy|email|announcement)\b", re.I)
     ZEUS = re.compile(r"\b(strategy|strategic|prioritize|prioritise|business plan|startup plan|launch plan|decision analysis)\b", re.I)
