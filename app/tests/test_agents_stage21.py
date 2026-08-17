@@ -69,6 +69,13 @@ def test_channel_parity():
     assert selections[0] == selections[1] == selections[2] == ["bolt"]
 
 
+def test_bolt_code_response_uses_large_output_budget():
+    from app.services.orchestrator.response_pipeline import ResponsePipeline
+
+    context = {"merged_contributions": {"selected_agents": ["Bolt"]}}
+    assert ResponsePipeline._stream_output_budget(message="Write an animated login page", context=context) == 6000
+
+
 def test_specialist_preparation_uses_existing_model_context_path():
     orchestrator = AgentOrchestrator()
     prepared = orchestrator.prepare(

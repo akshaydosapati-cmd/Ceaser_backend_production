@@ -10,9 +10,13 @@ class ResearchEngine:
         self.source_collector = source_collector or SourceCollector()
         self.citation_builder = citation_builder or CitationBuilder()
 
-    def research(self, query: str) -> ResearchResult:
+    def research(self, query: str, *, include_images: bool = True) -> ResearchResult:
         sources = self.source_collector.collect_sources(query=query)
-        images = [ResearchImage(**image) for image in self.source_collector.collect_images(query=query)]
+        images = (
+            [ResearchImage(**image) for image in self.source_collector.collect_images(query=query)]
+            if include_images
+            else []
+        )
         citations = self.citation_builder.build(sources)
         key_findings = [source.excerpt or source.snippet for source in sources if source.excerpt or source.snippet][:5]
         summary = self._summary(query=query, key_findings=key_findings, source_count=len(sources))

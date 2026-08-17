@@ -2099,8 +2099,38 @@ class CeaserOrchestrator:
         return compact or list(conversation_context.get("messages") or [])[-2:]
 
     def _maybe_research(self, query: str, selected_agent_names: list[str]):
-        _ = selected_agent_names
-        return self.research_engine.research(query)
+        return self.research_engine.research(
+            query,
+            include_images=self._should_include_research_images(query, selected_agent_names),
+        )
+
+    @staticmethod
+    def _should_include_research_images(message: str, selected_agents: list[str]) -> bool:
+        """Use image search only when pictures materially improve the answer."""
+        normalized = message.lower()
+        agents = {str(agent).lower() for agent in selected_agents}
+        if "bolt" in agents:
+            return False
+        non_visual_tasks = (
+            "code", "script", "function", "component", "html", "css", "javascript",
+            "python", "sql", "debug", "fix error", "write an email", "rewrite",
+            "translate", "summarize", "summary", "study plan", "checklist",
+        )
+        if any(term in normalized for term in non_visual_tasks):
+            return False
+        explicit_visual = (
+            "show images", "show photos", "show pictures", "images of", "photos of",
+            "pictures of", "what does it look like", "visual examples", "image gallery",
+        )
+        if any(term in normalized for term in explicit_visual):
+            return True
+        visual_subjects = (
+            "places to visit", "tourist places", "travel destinations", "monuments",
+            "architecture", "buildings", "weapons", "war machines", "aircraft",
+            "cars", "vehicles", "fashion", "artwork", "paintings", "wildlife",
+            "animals", "food dishes", "products", "phones", "laptops",
+        )
+        return any(term in normalized for term in visual_subjects)
 
     def _should_run_heavy_pipeline(self, message: str) -> bool:
         return self._is_explicit_workflow_creation_request(message)

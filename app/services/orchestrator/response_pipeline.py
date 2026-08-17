@@ -53,6 +53,8 @@ class ResponsePipeline:
         """Reserve only the completion budget needed for the current request."""
         normalized = message.lower()
         selected = (context.get("merged_contributions", {}) or {}).get("selected_agents", []) if isinstance(context, dict) else []
+        if any(str(agent).lower() == "bolt" for agent in selected):
+            return 6000
         # Workflow documents frequently contain many user-specified phases. A
         # short completion cap cuts the answer off partway through the final
         # phase, even though streaming itself completed successfully.

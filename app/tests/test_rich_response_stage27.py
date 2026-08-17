@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from app.schemas.rich_response import ResponseAsset, ResponseBlock
 from app.services.image_generation import ImageGenerationRequest, ImageGenerationService
 from app.services.rich_response_service import AssetReferenceService, RichResponseService
+from app.services.orchestrator.orchestrator import CeaserOrchestrator
 from app.core.database.base import Base
 from app.models.file import File
 from sqlalchemy import create_engine
@@ -14,6 +15,11 @@ def test_normal_chat_stays_simple_and_has_no_reasoning():
     rich=RichResponseService.compose({"response":"Quantum computing uses qubits.","selected_agents":[]},user_id="u1",task_id="t1")
     assert rich.primary_text=="Quantum computing uses qubits." and [b.type for b in rich.blocks]==["markdown"]
     assert "reasoning" not in rich.model_dump_json().lower() and "prompt" not in rich.model_dump_json().lower()
+
+def test_image_search_requires_visual_intent_and_is_suppressed_for_bolt():
+    assert CeaserOrchestrator._should_include_research_images("show images of Indian aircraft", []) is True
+    assert CeaserOrchestrator._should_include_research_images("write HTML and CSS for a login page", ["Bolt"]) is False
+    assert CeaserOrchestrator._should_include_research_images("explain quantum physics", []) is False
 
 def test_research_uses_only_real_sources_and_images():
     payload={"response":"Research complete.","selected_agents":["Alex"],"research":{"sources":[{"title":"Report","url":"https://example.com/report","publisher":"Example","snippet":"Evidence"},{"title":"Fake","url":"invented"}],"images":[{"title":"Chart","url":"https://example.com/report","image_url":"https://example.com/chart.jpg","source":"Example"},{"title":"Bad","url":"","image_url":"made-up"}]}}

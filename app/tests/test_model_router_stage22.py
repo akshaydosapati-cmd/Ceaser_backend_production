@@ -136,6 +136,17 @@ def test_normal_chat_routes_general_model():
     assert selected[0].model.model_id == "general"
 
 
+def test_software_workload_prefers_purpose_configured_model():
+    from app.intelligence.ai.model_router.models import Workload
+
+    generic = model("generic", "openai", {"coding", "reasoning"}, quality=10)
+    dedicated = model("dedicated", "nvidia", {"coding", "reasoning", "tool_use"}, quality=8)
+    dedicated.allowed_workloads = frozenset({Workload.SOFTWARE_ENGINEERING})
+    software_request = request_for_agent("bolt")
+    selected = ModelRouter(ModelRegistry([generic, dedicated])).selections(software_request)
+    assert selected[0].model.model_id == "dedicated"
+
+
 def test_missing_credentials_disable_configured_models_without_crash(monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", None)
     monkeypatch.setattr(settings, "groq_api_key", None)
