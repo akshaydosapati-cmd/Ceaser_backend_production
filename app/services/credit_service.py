@@ -5,6 +5,8 @@ from datetime import timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config.settings import settings
 from app.models.commercial import Plan, Subscription
@@ -12,6 +14,7 @@ from app.models.growth import CreditLedger, CreditProduct, CreditPurchase, Credi
 from app.models.mixins import utc_now
 from app.models.user import User
 from app.services.billing_service import BillingProviderError, RazorpayGateway
+from app.services.usage_ledger_service import UsageLedgerService, feature_for_workload
 
 
 class InsufficientCreditsError(ValueError):
@@ -67,13 +70,34 @@ class CreditService:
             return existing
         estimate = max(0, int(estimate if estimate is not None else settings.credit_costs.get(workload, settings.credit_costs.get("agent_workflow", 20))))
         wallet = self.wallet(user_id, lock=True)
-        available = wallet.monthly_balance + wallet.bonus_balance + wallet.purchased_balance - wallet.reserved_balance
-        if estimate > available:
+        reserved = self.db.execute(
+            update(CreditWallet)
+            .where(CreditWallet.id == wallet.id)
+            .where((CreditWallet.monthly_balance + CreditWallet.bonus_balance + CreditWallet.purchased_balance - CreditWallet.reserved_balance) >= estimate)
+            .values(reserved_balance=CreditWallet.reserved_balance + estimate)
+        )
+        if reserved.rowcount != 1:
+            self.db.rollback()
             raise InsufficientCreditsError("insufficient_credits")
         reservation = CreditReservation(user_id=user_id, request_id=request_id, workload=workload, estimated_credits=estimate, expires_at=utc_now() + timedelta(minutes=30))
-        wallet.reserved_balance += estimate
         self.db.add(reservation)
-        self.db.commit()
+        UsageLedgerService(self.db).start(
+            user_id=user_id,
+            request_id=request_id,
+            feature=feature_for_workload(workload),
+            operation=workload,
+            estimated_cost=0,
+            idempotency_key=f"credit:{user_id}:{request_id}",
+            metadata={"credit_estimate": estimate},
+        )
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.db.query(CreditReservation).filter_by(user_id=user_id, request_id=request_id).first()
+            if existing:
+                return existing
+            raise
         self.db.refresh(reservation)
         return reservation
 
@@ -94,6 +118,14 @@ class CreditService:
                 self._ledger(wallet, -taken, kind, "usage", reservation.workload, request_id)
                 remaining -= taken
         reservation.settled_credits, reservation.status = charge, "settled"
+        event = UsageLedgerService(self.db).start(
+            user_id=user_id, request_id=request_id, feature=feature_for_workload(reservation.workload),
+            operation=reservation.workload, idempotency_key=f"credit:{user_id}:{request_id}",
+        )
+        UsageLedgerService(self.db).complete(
+            event, status="completed" if meaningful_output else "empty",
+            metadata={"credit_charge": charge},
+        )
         self.db.commit()
         return reservation
 
@@ -104,6 +136,11 @@ class CreditService:
         wallet = self.wallet(user_id, lock=True)
         wallet.reserved_balance = max(0, wallet.reserved_balance - reservation.estimated_credits)
         reservation.status = "released"
+        event = UsageLedgerService(self.db).start(
+            user_id=user_id, request_id=request_id, feature=feature_for_workload(reservation.workload),
+            operation=reservation.workload, idempotency_key=f"credit:{user_id}:{request_id}",
+        )
+        UsageLedgerService(self.db).complete(event, status="released")
         self.db.commit()
         return reservation
 
@@ -115,7 +152,7 @@ class CreditService:
             self.db.flush()
         return row
 
-    def apply_referral(self, user: User, code: str) -> Referral:
+    def apply_referral(self, user: User, code: str, *, verified: bool = True) -> Referral:
         owner = self.db.query(ReferralCode).filter(ReferralCode.code == code.upper(), ReferralCode.active.is_(True)).first()
         if not owner:
             raise ValueError("Invalid referral code.")
@@ -123,15 +160,44 @@ class CreditService:
             raise ValueError("Self-referrals are not allowed.")
         existing = self.db.query(Referral).filter_by(referred_user_id=user.id).first()
         if existing:
+            if verified and existing.status == "pending":
+                return self._reward_referral(existing)
             return existing
+        created_at = user.created_at.replace(tzinfo=timezone.utc) if user.created_at.tzinfo is None else user.created_at
+        if verified and created_at < utc_now() - timedelta(hours=1):
+            raise ValueError("Referral links apply only to new accounts.")
         month_start = utc_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         rewarded = self.db.query(Referral).filter(Referral.referrer_user_id == owner.user_id, Referral.status == "rewarded", Referral.rewarded_at >= month_start).count()
         if rewarded >= settings.credit_referral_monthly_cap:
             raise ValueError("This referral code reached its monthly reward limit.")
-        referral = Referral(referrer_user_id=owner.user_id, referred_user_id=user.id, referral_code=owner.code, status="rewarded", rewarded_at=utc_now())
+        referral = Referral(referrer_user_id=owner.user_id, referred_user_id=user.id, referral_code=owner.code, status="pending" if not verified else "rewarded", rewarded_at=utc_now() if verified else None)
         self.db.add(referral)
         self.db.flush()
-        for uid, source in ((owner.user_id, "referral_reward"), (user.id, "referral_welcome")):
+        if not verified:
+            self.db.commit()
+            return referral
+        return self._reward_referral(referral, already_marked=True)
+
+    def finalize_referral(self, user: User) -> Referral | None:
+        referral = self.db.query(Referral).filter_by(referred_user_id=user.id).with_for_update().first()
+        if not referral or referral.status != "pending":
+            return referral
+        return self._reward_referral(referral)
+
+    def _reward_referral(self, referral: Referral, *, already_marked: bool = False) -> Referral:
+        if referral.status == "rewarded" and not already_marked:
+            return referral
+        month_start = utc_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        rewarded = self.db.query(Referral).filter(
+            Referral.referrer_user_id == referral.referrer_user_id,
+            Referral.status == "rewarded",
+            Referral.id != referral.id,
+            Referral.rewarded_at >= month_start,
+        ).count()
+        if rewarded >= settings.credit_referral_monthly_cap:
+            raise ValueError("This referral code reached its monthly reward limit.")
+        referral.status, referral.rewarded_at = "rewarded", referral.rewarded_at or utc_now()
+        for uid, source in ((referral.referrer_user_id, "referral_reward"), (referral.referred_user_id, "referral_welcome")):
             wallet = self.wallet(uid, lock=True)
             wallet.bonus_balance += settings.credit_referral_reward
             self._ledger(wallet, settings.credit_referral_reward, "REFERRAL_BONUS", "referral", source, referral.id)

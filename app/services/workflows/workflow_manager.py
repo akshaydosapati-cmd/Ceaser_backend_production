@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.models.workflow import WorkflowRun, WorkflowStep
 from app.services.audit_service import AuditService
 from app.services.workflows.workflow_templates import WorkflowTemplateRegistry
+from app.services.workflows.schemas import GoalWorkflowPlan
 
 
 class WorkflowManager:
@@ -28,6 +29,15 @@ class WorkflowManager:
         for agent in agents:
             run.steps.append(WorkflowStep(workflow_id=run.id, agent_name=agent, status="pending", metadata_json={}))
         AuditService(self.db).record(user_id=user_id, action="workflow_created", resource_type="workflow", resource_id=run.id, metadata={"workflow_type": workflow_type, "agents": agents}, commit=False)
+        self.db.flush()
+        return run
+
+    def create_goal_plan(self, plan: GoalWorkflowPlan) -> WorkflowRun:
+        run = WorkflowRun(user_id=plan.goal.user_id, workflow_type="goal_workflow", status="pending", metadata_json={"goal_plan": plan.model_dump(mode="json"), "outputs": {}, "replan_count": 0})
+        self.db.add(run)
+        self.db.flush()
+        for planned in plan.steps:
+            run.steps.append(WorkflowStep(workflow_id=run.id, agent_name=planned.responsible_agent or "CEASER", status=planned.state.lower(), metadata_json={"step_id": planned.step_id, "capability": planned.capability, "input_refs": planned.input_refs, "output_name": planned.output_name, "depends_on": planned.depends_on, "confirmation_required": planned.confirmation_required, "availability": "PENDING"}))
         self.db.flush()
         return run
 

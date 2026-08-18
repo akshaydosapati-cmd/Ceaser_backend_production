@@ -93,6 +93,12 @@ class BaseIntegrationProvider(ABC):
             response.raise_for_status()
             return response.json()
 
+    def google_request(self, integration: Integration, method: str, url: str, *, payload: dict | None = None) -> dict:
+        with httpx.Client(timeout=20) as client:
+            response = client.request(method, url, json=payload or {}, headers={"Authorization": f"Bearer {integration.access_token}", "Content-Type": "application/json"})
+            response.raise_for_status()
+            return response.json()
+
     def authorization_url(self, *, state: str) -> str:
         params = {
             "client_id": self.client_id,

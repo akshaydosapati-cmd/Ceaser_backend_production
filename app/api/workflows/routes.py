@@ -79,6 +79,14 @@ def cancel_workflow(workflow_id: str, user: Annotated[User, Depends(get_current_
     return manager.cancel(run)
 
 
+@router.post("/{workflow_id}/confirm", response_model=WorkflowStartResponse)
+def confirm_goal_workflow(workflow_id: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    try:
+        return WorkflowOrchestrator(db).resume_goal(user_id=user.id, workflow_id=workflow_id, confirmed=True).model_dump()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/{workflow_id}/status/{action}", response_model=WorkflowRunRead)
 def transition_workflow(workflow_id: str, action: str, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
     manager = WorkflowManager(db)

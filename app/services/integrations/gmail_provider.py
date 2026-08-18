@@ -1,6 +1,8 @@
 from app.services.integrations.base_provider import BaseIntegrationProvider
 from app.core.config.settings import settings
 from app.models.integration import Integration
+import base64
+from email.message import EmailMessage
 
 
 class GmailProvider(BaseIntegrationProvider):
@@ -8,7 +10,7 @@ class GmailProvider(BaseIntegrationProvider):
     name = "Gmail"
     category = "productivity"
     description = "Read inbox metadata, unread email, important email, and labels."
-    scopes = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.metadata"]
+    scopes = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.metadata", "https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/gmail.send"]
     auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
     token_url = "https://oauth2.googleapis.com/token"
 
@@ -73,3 +75,25 @@ class GmailProvider(BaseIntegrationProvider):
             return self.google_get(integration, url, params)
         except Exception as exc:
             return {"error": str(exc)}
+
+    @staticmethod
+    def _raw_message(to: str, subject: str, body: str, *, in_reply_to: str | None = None) -> str:
+        message = EmailMessage()
+        message["To"], message["Subject"] = to, subject
+        if in_reply_to:
+            message["In-Reply-To"] = in_reply_to
+            message["References"] = in_reply_to
+        message.set_content(body)
+        return base64.urlsafe_b64encode(message.as_bytes()).decode().rstrip("=")
+
+    def create_draft(self, integration: Integration, *, to: str, subject: str, body: str, thread_id: str | None = None, in_reply_to: str | None = None) -> dict:
+        payload = {"message": {"raw": self._raw_message(to, subject, body, in_reply_to=in_reply_to)}}
+        if thread_id:
+            payload["message"]["threadId"] = thread_id
+        return self.google_request(integration, "POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts", payload=payload)
+
+    def update_draft(self, integration: Integration, draft_id: str, *, to: str, subject: str, body: str) -> dict:
+        return self.google_request(integration, "PUT", f"https://gmail.googleapis.com/gmail/v1/users/me/drafts/{draft_id}", payload={"message": {"raw": self._raw_message(to, subject, body)}})
+
+    def send_draft(self, integration: Integration, draft_id: str) -> dict:
+        return self.google_request(integration, "POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts/send", payload={"id": draft_id})

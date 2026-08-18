@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from app.services.capabilities.schemas import Capability, CapabilitySurface
+from app.services.capabilities.manifests import core_manifests
+from app.services.capabilities.schemas import Capability, CapabilityManifest, CapabilitySurface
 from app.agents.v2.models import ExecutionTarget
 
 
@@ -9,12 +10,44 @@ class CapabilityRegistry:
 
     def __init__(self) -> None:
         self._capabilities = {capability.id: capability for capability in self._default_capabilities()}
+        self._manifests: dict[str, CapabilityManifest] = {}
+        self._manifest_aliases: dict[str, str] = {}
+        self.register_manifests(core_manifests())
 
     def list(self) -> list[Capability]:
         return list(self._capabilities.values())
 
     def get(self, capability_id: str) -> Capability | None:
         return self._capabilities.get(capability_id)
+
+    def register_manifests(self, manifests: list[CapabilityManifest] | tuple[CapabilityManifest, ...]) -> None:
+        for manifest in manifests:
+            self._manifests[manifest.key] = manifest
+            self._manifest_aliases[manifest.key] = manifest.key
+            for alias in manifest.aliases:
+                self._manifest_aliases[alias] = manifest.key
+
+    def register_plugin_manifests(self, provider) -> None:
+        """Plugins may expose manifests without becoming a second execution registry."""
+        loader = getattr(provider, "capability_manifests", None)
+        if callable(loader):
+            self.register_manifests(tuple(loader()))
+
+    def list_manifests(self) -> list[CapabilityManifest]:
+        return list(self._manifests.values())
+
+    def resolve_manifest(self, capability_key: str | None) -> CapabilityManifest:
+        requested = (capability_key or "unknown").strip().lower()
+        canonical = self._manifest_aliases.get(requested)
+        if canonical:
+            return self._manifests[canonical]
+        return CapabilityManifest(
+            key=requested[:120] or "unknown", name="Unknown Capability", category="unknown",
+            description="Capability is not classified yet; existing execution behavior remains unchanged.",
+            execution_type="unknown", cost_class="unknown", risk_level="unknown",
+            lite_allowed=False, estimated_latency_class="unknown", enabled=True,
+            metadata={"classification": "fallback"},
+        )
 
     def by_agent(self, agent: str) -> list[Capability]:
         key = agent.lower()
@@ -152,6 +185,7 @@ class CapabilityRegistry:
             ),
             *self._local_development_capabilities(),
             *self._browser_capabilities(),
+            *self._windows_capabilities(),
             Capability(
                 id="cloud.workspace.build", name="Cloud Workspace Build", owner_agent="Bolt", category="cloud",
                 description="Build in a CEASER cloud workspace when Stage 24 workers are available.", triggers=("cloud build",),
@@ -229,6 +263,25 @@ class CapabilityRegistry:
             surfaces=CapabilitySurface(chat=True, voice=True, desktop_overlay=True), requires_confirmation=identifier in protected,
             allowed_execution_targets=(ExecutionTarget.DEVICE,),
         ) for identifier, description in definitions.items()]
+
+    @staticmethod
+    def _windows_capabilities() -> list[Capability]:
+        definitions = {
+            "app.open": ("Open an installed application.", ("open app", "launch app", "open chrome", "open calculator")),
+            "app.focus": ("Bring an existing application window forward.", ("switch to", "bring forward", "focus app")),
+            "app.close": ("Close an explicitly resolved application.", ("close app", "close notepad", "close chrome")),
+            "window.move_to_monitor": ("Move one resolved window to an available monitor.", ("move to second monitor", "move window to monitor")),
+            "window.resize": ("Resize one resolved window.", ("resize window", "half the screen")),
+            "audio.volume.set": ("Set verified Windows output volume.", ("set volume", "volume to")),
+            "screen.capture_all": ("Capture all displays to a registered CEASER asset.", ("take screenshot", "capture screen")),
+            "file.search": ("Search authorized local folders.", ("find file", "search files")),
+            "directory.create": ("Create an authorized local folder.", ("create folder", "make directory")),
+            "file.move": ("Move an explicitly resolved local file.", ("move file", "organize downloads")),
+            "wifi.status": ("Read current Wi-Fi state.", ("wifi status", "wi-fi status")),
+            "system.open_settings": ("Open a validated Windows Settings page.", ("open settings", "windows settings")),
+        }
+        protected = {"app.close", "file.move"}
+        return [Capability(id=identifier, name=identifier.replace(".", " ").title(), owner_agent="CEASER", category=identifier.split(".", 1)[0], description=description, triggers=triggers, surfaces=CapabilitySurface(chat=True, voice=True, desktop_overlay=True, automation=True), requires_confirmation=identifier in protected, allowed_execution_targets=(ExecutionTarget.DEVICE,)) for identifier, (description, triggers) in definitions.items()]
 
 
 capability_registry = CapabilityRegistry()

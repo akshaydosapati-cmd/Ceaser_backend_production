@@ -23,7 +23,8 @@ def test_goal_planner_chains_research_into_report_and_presentation():
     plan = GoalWorkflowOrchestrator().plan(user_id="user-1", request="Research current battery technology and prepare a report and presentation.")
     assert [step.capability for step in plan.steps] == ["research.execute", "document.create", "presentation.create"]
     assert plan.steps[1].input_refs == ["research_result"]
-    assert plan.steps[2].depends_on == ["step_2"]
+    assert plan.steps[2].depends_on == ["step_1"]
+    assert plan.steps[2].input_refs == ["research_result"]
     assert not plan.missing_capabilities
 
 

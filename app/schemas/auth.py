@@ -6,6 +6,7 @@ from app.schemas.user import UserRead
 class AuthCredentials(BaseModel):
     email: EmailStr
     password: str
+    referral_code: str | None = Field(default=None, min_length=4, max_length=40)
 
 
 class PasswordRecoveryRequest(BaseModel):

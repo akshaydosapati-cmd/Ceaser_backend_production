@@ -9,7 +9,7 @@ class GoogleCalendarProvider(BaseIntegrationProvider):
     name = "Google Calendar"
     category = "productivity"
     description = "Read calendars, events, upcoming schedule, and event details."
-    scopes = ["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/calendar.events.readonly"]
+    scopes = ["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/calendar.events"]
     auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
     token_url = "https://oauth2.googleapis.com/token"
 
@@ -57,3 +57,9 @@ class GoogleCalendarProvider(BaseIntegrationProvider):
             },
             "items": events,
         }
+
+    def create_event(self, integration: Integration, event: dict) -> dict:
+        return self.google_request(integration, "POST", "https://www.googleapis.com/calendar/v3/calendars/primary/events", payload=event)
+
+    def update_event(self, integration: Integration, event_id: str, event: dict) -> dict:
+        return self.google_request(integration, "PATCH", f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}", payload=event)

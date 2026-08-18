@@ -60,12 +60,13 @@ class GoalWorkflowStep(BaseModel):
     verification_rule: str
     retry_limit: int = Field(default=1, ge=0, le=2)
     failure_strategy: Literal["stop", "replan", "wait_for_user"] = "replan"
+    state: Literal["PENDING", "READY", "RUNNING", "WAITING_FOR_USER", "WAITING_FOR_DEVICE", "COMPLETED", "FAILED", "SKIPPED"] = "PENDING"
 
 
 class GoalWorkflowPlan(BaseModel):
     workflow_id: str
     goal: UserGoal
     steps: list[GoalWorkflowStep]
-    state: Literal["PLANNED", "WAITING_FOR_USER", "WAITING_FOR_DEVICE", "FAILED"] = "PLANNED"
+    state: Literal["PLANNED", "RUNNING", "WAITING_FOR_USER", "WAITING_FOR_DEVICE", "COMPLETED", "FAILED"] = "PLANNED"
     estimated_credits: int = 0
     missing_capabilities: list[str] = Field(default_factory=list)

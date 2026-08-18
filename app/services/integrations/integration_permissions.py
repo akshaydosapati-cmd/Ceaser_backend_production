@@ -1,5 +1,5 @@
 READ_ONLY_PERMISSIONS = {
-    "google-calendar": ["calendar.events.readonly", "calendar.readonly"],
+    "google-calendar": ["calendar.events", "calendar.readonly"],
     "gmail": ["gmail.metadata", "gmail.readonly"],
     "google-drive": ["drive.metadata.readonly", "drive.readonly"],
     "google-tasks": ["tasks.readonly"],

@@ -85,8 +85,14 @@ async def signup(payload: AuthCredentials, db: Annotated[Session, Depends(get_db
     user = UserRepository(db).get_or_create(email=normalized_email, user_id=supabase_user.get("id"))
     db.commit()
     db.refresh(user)
-    AuditService(db).record(user_id=user.id, action="login", resource_type="auth", resource_id=user.id, metadata={"event": "signup"})
     session = supabase_response.get("session") or {}
+    if payload.referral_code:
+        from app.services.credit_service import CreditService
+        try:
+            CreditService(db).apply_referral(user, payload.referral_code, verified=bool(session.get("access_token")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    AuditService(db).record(user_id=user.id, action="login", resource_type="auth", resource_id=user.id, metadata={"event": "signup"})
     return AuthSession(access_token=session.get("access_token"), refresh_token=session.get("refresh_token"), user=UserRead.model_validate(user))
 
 
@@ -348,6 +354,8 @@ def update_profile(
         profile.onboarding_completed = payload.onboarding_completed
     db.commit()
     db.refresh(user)
+    from app.services.credit_service import CreditService
+    CreditService(db).finalize_referral(user)
     AuditService(db).record(
         user_id=user.id,
         action="profile_updated",

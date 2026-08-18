@@ -20,6 +20,7 @@ from app.services.audit_service import AuditService
 from app.services.background_task_service import background_task_store
 from app.services.orchestrator import CeaserOrchestrator
 from app.services.rich_response_service import RichResponseService
+from app.services.credit_service import CreditService, InsufficientCreditsError
 
 router = APIRouter(prefix="/ceaser", tags=["ceaser"])
 logger = logging.getLogger(__name__)
@@ -54,9 +55,16 @@ def ceaser_public_demo(payload: CeaserDemoRequest):
 
 @router.post("/chat", response_model=CeaserChatResponse)
 def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    billing_id = f"chat:{payload.request_id or uuid.uuid4().hex}"
+    credits = CreditService(db)
+    try:
+        reservation = credits.reserve(user.id, billing_id, "ai_conversation")
+    except InsufficientCreditsError as exc:
+        raise HTTPException(status_code=402, detail="Insufficient CEASER credits.") from exc
     try:
         desktop_fast = _maybe_desktop_fast_response(payload)
         if desktop_fast is not None:
+            credits.settle(user.id, billing_id, reservation.estimated_credits, meaningful_output=True)
             return desktop_fast
         response = CeaserOrchestrator(db).handle_message(
             user_id=user.id,
@@ -76,9 +84,14 @@ def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_cu
             resource_id=payload.conversation_id,
             metadata={"selected_agents": response.get("selected_agents", []), "memory_count": len(response.get("memories_used", []))},
         )
+        credits.settle(user.id, billing_id, reservation.estimated_credits, meaningful_output=bool(response.get("response")))
         return response
     except ValueError as exc:
+        credits.release(user.id, billing_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception:
+        credits.release(user.id, billing_id)
+        raise
 
 
 def _maybe_desktop_fast_response(payload: CeaserChatRequest) -> dict | None:
@@ -173,7 +186,12 @@ def get_ceaser_background_task(task_id: str, user: Annotated[User, Depends(get_c
 def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatRequest) -> None:
     background_task_store.set_running(task_id)
     db = SessionLocal()
+    billing_id = f"chat:{payload.request_id or task_id}"
+    credits = CreditService(db)
+    reserved = False
     try:
+        credits.reserve(user_id, billing_id, "ai_conversation")
+        reserved = True
         response = CeaserOrchestrator(db).handle_message(
             user_id=user_id,
             message=payload.message,
@@ -184,11 +202,17 @@ def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatReq
             device_id=payload.device_id,
             desktop_file_context=payload.desktop_file_context,
         )
+        credits.settle(user_id, billing_id, settings.credit_costs.get("ai_conversation", 5), meaningful_output=bool(response))
+        reserved = False
         background_task_store.set_result(task_id, response)
+    except InsufficientCreditsError:
+        background_task_store.set_error(task_id, "Insufficient CEASER credits.")
     except Exception:
         logger.exception("ceaser_background_task_failed task_id=%s user_id=%s", task_id, user_id)
         background_task_store.set_error(task_id, "We couldn't complete your request. Please try again.")
     finally:
+        if reserved:
+            credits.release(user_id, billing_id)
         db.close()
 
 
@@ -199,6 +223,12 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
     conversation_id = payload.conversation_id
     file_ids = list(payload.file_ids)
     request_id = str(uuid.uuid4())
+    billing_id = f"chat:{payload.request_id or request_id}"
+    credits = CreditService(db)
+    try:
+        reservation = credits.reserve(user.id, billing_id, "ai_conversation")
+    except InsufficientCreditsError as exc:
+        raise HTTPException(status_code=402, detail="Insufficient CEASER credits.") from exc
     request_received = perf_counter()
     logger.info("ceaser_latency request_id=%s request_received_ms=0 conversation_id=%s", request_id, conversation_id)
     logger.info("ceaser_stream_stage request_id=%s stage=authentication_complete user_id=%s", request_id, user_id)
@@ -212,6 +242,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
         stage_marks: dict[str, float] = {"start": started}
         trace: dict[str, object] = {"request_id": request_id}
         first_sse_token_logged = False
+        completed_meaningfully = False
         try:
             yield event("response.started", {"id": request_id, "status": "streaming", "conversation_id": conversation_id})
             yield event("activity", {"event_id": f"evt_{request_id}_start", "task_id": request_id, "agent": "CEASER", "category": "response", "stage": "understanding", "status": "running", "title": "Understanding request", "safe_metadata": {}})
@@ -281,6 +312,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 for block in rich["blocks"]: yield event("block.created", block)
                 yield event("response.completed", rich)
                 yield event("complete", response)
+                completed_meaningfully = bool(response.get("response"))
                 logger.info(
                     "ceaser_latency request_id=%s request_received_ms=0 agent_started_ms=%s llm_request_sent_ms=not_applicable first_token_ms=%s last_token_ms=%s",
                     request_id,
@@ -377,6 +409,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             yield event("activity", rich["activity"][0])
             yield event("response.completed", rich)
             yield event("complete", response)
+            completed_meaningfully = bool(response.get("response"))
             logger.info("ceaser_stream_stage request_id=%s stage=request_complete total_ms=%s", request_id, trace.get("total_time_ms"))
         except ValueError as exc:
             yield event("response.failed", {"id": request_id, "status": "failed", "error": {"category": "validation", "message": str(exc), "retryable": False}})
@@ -385,6 +418,11 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             logger.exception("ceaser_chat_stream_failed user_id=%s conversation_id=%s", user_id, conversation_id)
             yield event("response.failed", {"id": request_id, "status": "failed", "error": {"category": "internal", "message": "We couldn't complete your request. Please try again.", "retryable": True}})
             yield event("error", {"message": "We couldn't complete your request. Please try again."})
+        finally:
+            if completed_meaningfully:
+                credits.settle(user_id, billing_id, reservation.estimated_credits, meaningful_output=True)
+            else:
+                credits.release(user_id, billing_id)
 
     # Keep SSE events flowing through hosting proxies as they are produced.
     # Without no-transform / X-Accel-Buffering, a proxy can hold small token

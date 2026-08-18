@@ -48,3 +48,41 @@ class Capability:
             "requires_connected_account": self.requires_connected_account,
             "allowed_execution_targets": [target.value for target in self.allowed_execution_targets],
         }
+
+
+@dataclass(frozen=True)
+class CapabilityManifest:
+    key: str
+    name: str
+    category: str
+    description: str
+    execution_type: str
+    cost_class: str
+    risk_level: str
+    requires_ai: bool = False
+    requires_web: bool = False
+    requires_voice: bool = False
+    requires_plugin: bool = False
+    requires_network: bool = False
+    local_execution_available: bool = False
+    lite_allowed: bool = False
+    estimated_latency_class: str = "instant"
+    enabled: bool = True
+    manifest_version: int = 1
+    aliases: tuple[str, ...] = ()
+    metadata: dict = field(default_factory=dict)
+
+    def as_dict(self) -> dict:
+        return {
+            "key": self.key, "name": self.name, "category": self.category,
+            "description": self.description, "execution_type": self.execution_type,
+            "cost_class": self.cost_class, "risk_level": self.risk_level,
+            "requires_ai": self.requires_ai, "requires_web": self.requires_web,
+            "requires_voice": self.requires_voice, "requires_plugin": self.requires_plugin,
+            "requires_network": self.requires_network,
+            "local_execution_available": self.local_execution_available,
+            "lite_allowed": self.lite_allowed,
+            "estimated_latency_class": self.estimated_latency_class,
+            "enabled": self.enabled, "manifest_version": self.manifest_version,
+            "aliases": list(self.aliases), "metadata": dict(self.metadata),
+        }
