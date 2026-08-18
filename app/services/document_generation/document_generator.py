@@ -26,8 +26,12 @@ class DocumentGenerator:
         template = templates.get(template_id) if template_id else templates.route(prompt, kind)
         selected_agent = agent_id or template.agent_id
         title = self._source_title(source_content) if source_content else self._title(prompt, template.name)
-        content = self._clean_content(source_content) if source_content else self._content(prompt=prompt, title=title, template_name=template.name, sections=template.sections, agent_id=selected_agent)
-        sections = self._sections_from_source(content) if source_content else self._split_sections(content, template.sections)
+        if source_content:
+            sections = self._sections_from_source(self._clean_content(source_content))
+            content = self._sections_to_text(sections)
+        else:
+            content = self._content(prompt=prompt, title=title, template_name=template.name, sections=template.sections, agent_id=selected_agent)
+            sections = self._split_sections(content, template.sections)
         generator = self.generators[kind]
         bytes_data = generator.generate(title, sections)
         filename = f"{self._safe_name(title)}.{kind}"
@@ -95,6 +99,12 @@ class DocumentGenerator:
         cleaned = re.sub(r"```(?:json|markdown|text)?", "", cleaned, flags=re.I)
         cleaned = cleaned.replace("```", "")
         cleaned = re.sub(r"^\s*#+\s*", "", cleaned, flags=re.M)
+        cleaned = re.sub(
+            r"\n*\s*(?:if you(?:'d| would) like,?\s*)?i can (?:also\s+)?(?:provide|add|expand|explain|help with)[^\n]*\.?\s*$",
+            "",
+            cleaned,
+            flags=re.I,
+        )
         return cleaned.strip()
 
     @staticmethod
@@ -149,6 +159,10 @@ class DocumentGenerator:
         if lines:
             sections.append((heading, "\n".join(lines).strip()))
         return sections or [("Document Content", content or "No content was available.")]
+
+    @staticmethod
+    def _sections_to_text(sections: list[tuple[str, str]]) -> str:
+        return "\n\n".join(f"{heading}\n{body}" for heading, body in sections if body.strip()).strip()
 
     @staticmethod
     def _project_report_sections(payload: dict) -> list[tuple[str, str]]:

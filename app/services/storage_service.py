@@ -59,6 +59,8 @@ class StorageService:
         headers = {"Authorization": f"Bearer {settings.supabase_service_role_key}", "apikey": settings.supabase_service_role_key or ""}
         with httpx.Client(timeout=30) as client:
             response = client.get(url, headers=headers)
+            if response.status_code == 404:
+                raise FileNotFoundError(path)
             response.raise_for_status()
             return response.content
 
