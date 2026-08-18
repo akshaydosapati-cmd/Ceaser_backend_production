@@ -33,7 +33,7 @@ from app.services.device_gateway_service import DeviceGatewayService
 from app.services.browser_automation_service import BrowserAutomationService
 from app.services.social_publishing_service import SocialPublishingService
 from app.models.social_publish import SocialPublishTask
-from app.services.workflows import WorkflowOrchestrator
+from app.services.workflows.workflow_orchestrator import WorkflowOrchestrator
 from app.services.integrations import IntegrationManager
 from app.services.integrations.integration_execution_engine import IntegrationExecutionEngine, IntegrationToolResult
 from app.services.integrations.integration_intent_resolver import IntegrationIntentResolver

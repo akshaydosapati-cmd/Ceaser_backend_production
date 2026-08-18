@@ -193,6 +193,11 @@ class Settings(BaseSettings):
     razorpay_checkout_name: str = Field(default="CEASER", alias="RAZORPAY_CHECKOUT_NAME")
     razorpay_checkout_theme_color: str = Field(default="#6d4cff", alias="RAZORPAY_CHECKOUT_THEME_COLOR")
     razorpay_plan_map_raw: str = Field(default="{}", alias="RAZORPAY_PLAN_MAP_JSON")
+    credit_free_monthly: int = Field(default=500, alias="CREDIT_FREE_MONTHLY")
+    credit_pro_monthly: int = Field(default=5000, alias="CREDIT_PRO_MONTHLY")
+    credit_referral_reward: int = Field(default=500, alias="CREDIT_REFERRAL_REWARD")
+    credit_referral_monthly_cap: int = Field(default=10, alias="CREDIT_REFERRAL_MONTHLY_CAP")
+    credit_costs_raw: str = Field(default='{"ai_conversation":2,"research":10,"agent_workflow":20,"bolt_development":30,"local_command":0}', alias="CREDIT_COSTS_JSON")
     admin_emails_raw: str = Field(default="", alias="ADMIN_EMAILS")
 
     @property
@@ -229,6 +234,14 @@ class Settings(BaseSettings):
                 if plan_id
             }
         return normalized
+
+    @property
+    def credit_costs(self) -> dict[str, int]:
+        try:
+            parsed = json.loads(self.credit_costs_raw or "{}")
+            return {str(key): max(0, int(value)) for key, value in parsed.items()}
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return {"ai_conversation": 2, "research": 10, "agent_workflow": 20, "bolt_development": 30, "local_command": 0}
 
     @property
     def admin_emails(self) -> set[str]:

@@ -68,6 +68,11 @@ class ResearchResultResponse(BaseModel):
     sources: list[ResearchSourceResponse]
     citations: list[CitationResponse]
     images: list[ResearchImageResponse] = Field(default_factory=list)
+    claims: list[dict] = Field(default_factory=list)
+    statistics: list[dict] = Field(default_factory=list)
+    comparisons: list[dict] = Field(default_factory=list)
+    confidence: float | None = None
+    unresolved_questions: list[str] = Field(default_factory=list)
 
 
 class WorkflowResponse(BaseModel):

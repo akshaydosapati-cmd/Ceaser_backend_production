@@ -157,7 +157,29 @@ class CapabilityRegistry:
                 description="Build in a CEASER cloud workspace when Stage 24 workers are available.", triggers=("cloud build",),
                 allowed_execution_targets=(ExecutionTarget.CLOUD,),
             ),
+            *self._workflow_capabilities(),
         ]
+
+    @staticmethod
+    def _workflow_capabilities() -> list[Capability]:
+        definitions = {
+            "research.execute": ("Alex", "Produce reusable source-grounded research."),
+            "document.create": ("Atlas", "Create and persist a verified document artifact."),
+            "document.update": ("Atlas", "Update a verified document artifact."),
+            "presentation.create": ("Nova", "Create and persist a presentation artifact."),
+            "spreadsheet.read": ("CEASER", "Read a registered spreadsheet."),
+            "spreadsheet.update": ("CEASER", "Update a registered spreadsheet with grounded values."),
+            "email.create_draft": ("Friday", "Create a draft through a user-owned email integration."),
+            "email.update_draft": ("Friday", "Update an existing user-owned email draft."),
+            "email.reply_draft": ("Friday", "Create a reply draft without sending it."),
+            "email.send": ("Friday", "Send a confirmed email draft."),
+            "calendar.find_event": ("Friday", "Find a user-owned calendar event."),
+            "calendar.create_event": ("Friday", "Create a user-owned calendar event."),
+            "calendar.update_event": ("Friday", "Update a confirmed user-owned calendar event."),
+            "ai.answer": ("CEASER", "Answer through the normal CEASER response pipeline."),
+        }
+        protected = {"email.send", "calendar.update_event"}
+        return [Capability(id=identifier, name=identifier.replace(".", " ").title(), owner_agent=owner, category=identifier.split(".", 1)[0], description=description, triggers=(identifier.replace(".", " "),), surfaces=CapabilitySurface(chat=True, voice=True, desktop_overlay=True, automation=True, integrations=True), requires_confirmation=identifier in protected, allowed_execution_targets=(ExecutionTarget.CLOUD,)) for identifier, (owner, description) in definitions.items()]
 
     @staticmethod
     def _local_development_capabilities() -> list[Capability]:

@@ -22,6 +22,7 @@ from app.models.desktop import DesktopAuthCode, DesktopCloudResource, DesktopCom
 from app.models.draft import Draft, DraftHistory
 from app.models.file import File
 from app.models.generated_document import AgentActivity, GeneratedDocument
+from app.models.growth import CreditLedger, CreditProduct, CreditPurchase, CreditReservation, CreditWallet, Referral, ReferralCode
 from app.models.integration import Integration
 from app.models.social_publish import SocialPublishTask
 from app.models.knowledge import ContextRun, KnowledgeChunk, KnowledgeRetrievalLog, KnowledgeSource
@@ -59,6 +60,7 @@ __all__ = [
     "File",
     "AgentActivity",
     "GeneratedDocument",
+    "CreditLedger", "CreditProduct", "CreditPurchase", "CreditReservation", "CreditWallet", "Referral", "ReferralCode",
     "Institution",
     "InstitutionDomain",
     "Integration",

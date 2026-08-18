@@ -512,6 +512,9 @@ class RazorpayBillingService:
             self._upsert_payment_by_event(entity)
         if event_type.startswith("invoice.") and entity.get("id"):
             self._upsert_invoice_by_event(entity)
+        if event_type in {"payment.captured", "payment.authorized", "payment.refunded", "refund.processed"}:
+            from app.services.credit_service import CreditService
+            CreditService(self.db).apply_payment_webhook(entity, event_type)
 
     def _upsert_payment(self, *, user_id: str, subscription: Subscription, payment: dict[str, Any]) -> BillingPayment:
         record = self.db.query(BillingPayment).filter(BillingPayment.provider == "razorpay", BillingPayment.provider_payment_id == str(payment.get("id"))).first()

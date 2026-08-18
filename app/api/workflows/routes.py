@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -9,8 +10,16 @@ from app.models.user import User
 from app.schemas.workflow import WorkflowRunRead, WorkflowStartRequest, WorkflowStartResponse, WorkflowStepRead, WorkflowTemplateRead
 from app.services.workflows import WorkflowOrchestrator
 from app.services.workflows.workflow_manager import WorkflowManager
+from app.services.workflows.goal_orchestrator import GoalWorkflowOrchestrator
+from app.services.credit_service import CreditService, InsufficientCreditsError
+from app.models.integration import Integration
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+@router.post("/goals/plan")
+def plan_goal(payload: WorkflowStartRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    integrations = [row.provider for row in db.query(Integration).filter(Integration.user_id == user.id, Integration.status == "connected").all()]
+    return GoalWorkflowOrchestrator().plan(user_id=user.id, request=payload.message, context={"file_ids": payload.file_ids or [], "integrations": integrations, "current_conversation": payload.conversation_id}).model_dump()
 
 
 @router.get("/templates", response_model=list[WorkflowTemplateRead])
@@ -21,7 +30,22 @@ def workflow_templates(user: Annotated[User, Depends(get_current_user)], db: Ann
 
 @router.post("/start", response_model=WorkflowStartResponse)
 def start_workflow(payload: WorkflowStartRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
-    return WorkflowOrchestrator(db).run(user_id=user.id, message=payload.message, conversation_id=payload.conversation_id, file_ids=payload.file_ids).model_dump()
+    request_id = f"workflow:{uuid4().hex}"
+    credits = CreditService(db)
+    try:
+        charge = credits.reserve(user.id, request_id, "agent_workflow")
+    except InsufficientCreditsError as exc:
+        overview = credits.overview(user.id)
+        raise HTTPException(status_code=402, detail={"code": "insufficient_credits", "message": "You're out of CEASER credits.", "renewal_date": str(overview["renewal_date"]), "actions": ["buy_credits", "upgrade", "refer_and_earn"]}) from exc
+    try:
+        result = WorkflowOrchestrator(db).run(user_id=user.id, message=payload.message, conversation_id=payload.conversation_id, file_ids=payload.file_ids)
+        payload_result = result.model_dump()
+        meaningful = bool(payload_result.get("result_summary") or payload_result.get("final_response"))
+        credits.settle(user.id, request_id, charge.estimated_credits, meaningful_output=meaningful)
+        return payload_result
+    except Exception:
+        credits.release(user.id, request_id)
+        raise
 
 
 @router.get("", response_model=list[WorkflowRunRead])
