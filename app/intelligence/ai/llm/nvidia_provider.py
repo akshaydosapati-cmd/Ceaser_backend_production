@@ -70,19 +70,43 @@ class NvidiaProvider(LLMProvider):
                     if trace is not None:
                         trace["stream_opened"] = True
                         trace["provider_connect_ms"] = round((perf_counter() - started) * 1000, 2)
+                    emitted_content = False
+                    non_sse_lines: list[str] = []
                     async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
+                        if not line.startswith("data:"):
+                            if line.strip():
+                                non_sse_lines.append(line)
                             continue
-                        raw = line[6:].strip()
+                        raw = line[5:].strip()
                         if raw == "[DONE]":
                             break
                         try:
                             chunk = json.loads(raw)
                         except json.JSONDecodeError:
                             continue
-                        delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                        choice = (chunk.get("choices") or [{}])[0]
+                        delta = (choice.get("delta") or {}).get("content")
                         if isinstance(delta, str) and delta:
+                            emitted_content = True
                             yield delta
+                        elif isinstance(choice.get("message"), dict):
+                            text = self._extract_text(chunk)
+                            if text:
+                                emitted_content = True
+                                yield text
+                    if not emitted_content and non_sse_lines:
+                        try:
+                            text = self._extract_text(json.loads("\n".join(non_sse_lines)))
+                        except (json.JSONDecodeError, AIServiceUnavailableError):
+                            text = ""
+                        if text:
+                            emitted_content = True
+                            yield text
+                    if not emitted_content:
+                        raise AIServiceUnavailableError(
+                            "NVIDIA stream contained no answer text.", retryable=True,
+                            provider="nvidia", category="invalid_response",
+                        )
                     if trace is not None:
                         trace["stream_completed"] = True
         except (asyncio.CancelledError, GeneratorExit):

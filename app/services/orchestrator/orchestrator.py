@@ -566,10 +566,20 @@ class CeaserOrchestrator:
             memories=memory_first_results,
         )
         tool_calls_started = perf_counter()
-        web_search_requested = force_live_web_search or (not research_result and self._should_run_live_research(
-            route=route_decision.route,
-            has_internal_context=has_internal_context,
-        ))
+        is_coding_request = "Bolt" in selected_agent_names or bool(
+            re.search(r"\b(?:code|coding|program|script|function|component|html|css|javascript|typescript|python|java|sql|debug)\b", message, re.I)
+        )
+        explicit_research_request = bool(re.search(r"\b(?:search|research|latest|current|documentation|docs|sources)\b", message, re.I))
+        web_search_requested = (not is_coding_request or explicit_research_request) and (
+            force_live_web_search
+            or (
+                not research_result
+                and self._should_run_live_research(
+                    route=route_decision.route,
+                    has_internal_context=has_internal_context,
+                )
+            )
+        )
         if web_search_requested:
             research_result = self._maybe_research(
                 query=self._research_query(message, conversation_context),
