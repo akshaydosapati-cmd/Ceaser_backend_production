@@ -52,6 +52,14 @@ class Settings(BaseSettings):
         alias="HUGGINGFACE_CODING_MODELS",
     )
     huggingface_image_model: str = Field(default="black-forest-labs/FLUX.1-schnell", alias="HUGGINGFACE_IMAGE_MODEL")
+    huggingface_image_models_raw: str = Field(
+        default="black-forest-labs/FLUX.1-schnell,ByteDance/Hyper-SD",
+        alias="HUGGINGFACE_IMAGE_MODELS",
+    )
+    huggingface_datasets_enabled: bool = Field(default=False, alias="HUGGINGFACE_DATASETS_ENABLED")
+    huggingface_datasets_json: str = Field(default="[]", alias="HUGGINGFACE_DATASETS_JSON")
+    huggingface_dataset_max_rows: int = Field(default=3, alias="HUGGINGFACE_DATASET_MAX_ROWS")
+    huggingface_dataset_timeout_seconds: float = Field(default=5.0, alias="HUGGINGFACE_DATASET_TIMEOUT_SECONDS")
     huggingface_base_url: str = Field(
         default="https://router.huggingface.co/v1/chat/completions",
         validation_alias=AliasChoices("HUGGINGFACE_BASE_URL", "HF_BASE_URL"),
@@ -254,6 +262,30 @@ class Settings(BaseSettings):
             if model not in deduped:
                 deduped.append(model)
         return deduped
+
+    @property
+    def huggingface_image_models(self) -> list[str]:
+        models = [self.huggingface_image_model.strip()]
+        models.extend(model.strip() for model in self.huggingface_image_models_raw.split(",") if model.strip())
+        return list(dict.fromkeys(model for model in models if model))
+
+    @property
+    def huggingface_datasets(self) -> list[dict[str, str]]:
+        try:
+            parsed = json.loads(self.huggingface_datasets_json or "[]")
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [
+            {
+                "dataset": str(item.get("dataset", "")).strip(),
+                "config": str(item.get("config", "default")).strip() or "default",
+                "split": str(item.get("split", "train")).strip() or "train",
+            }
+            for item in parsed
+            if isinstance(item, dict) and str(item.get("dataset", "")).strip()
+        ][:5]
 
     @property
     def credit_costs(self) -> dict[str, int]:

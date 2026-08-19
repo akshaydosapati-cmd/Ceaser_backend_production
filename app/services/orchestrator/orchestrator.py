@@ -30,6 +30,7 @@ from app.services.project_service import ProjectService
 from app.services.orchestrator.user_context_resolver import UserContextResolver
 from app.services.local_bolt_dispatcher import LocalBoltDispatcher
 from app.services.image_generation import HuggingFaceImageGenerationProvider, ImageGenerationRequest, ImageGenerationService
+from app.services.huggingface_dataset_service import HuggingFaceDatasetService
 from app.services.github_project_service import GitHubProjectService
 from app.services.device_gateway_service import DeviceGatewayService
 from app.services.browser_automation_service import BrowserAutomationService
@@ -276,6 +277,13 @@ class CeaserOrchestrator:
             conversation_id=conversation.id if conversation else conversation_id,
             file_ids=file_ids or [],
         ))
+        dataset_result = None
+        if settings.huggingface_datasets_enabled and not is_coding_request:
+            dataset_result = HuggingFaceDatasetService().search(effective_message)
+            if dataset_result["evidence"]:
+                existing = str(knowledge_context.get("evidence") or "")
+                knowledge_context["evidence"] = "\n\n".join(part for part in (existing, dataset_result["evidence"]) if part)
+                knowledge_context["retrieval_sources"] = list(dict.fromkeys([*(knowledge_context.get("retrieval_sources") or []), "huggingface_dataset"]))
         memories = memory_first_results if memory_first_context is not None else [] if lightweight_follow_up or lightweight_normal else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=message)
         specialist_plan = self.specialist_agents.prepare(
             message,
@@ -614,6 +622,7 @@ class CeaserOrchestrator:
             "knowledge_route": route_decision.route.value,
             "knowledge_route_reason": route_decision.reason,
             "retrieval_sources": knowledge_context.get("retrieval_sources", []),
+            "dataset_rows": len(dataset_result["rows"]) if dataset_result else 0,
             "file_lookup_ms": request_trace.get("file_lookup_ms") or knowledge_context.get("file_lookup_ms"),
             "permission_check_ms": request_trace.get("permission_check_ms"),
             "document_metadata_load_ms": knowledge_context.get("document_metadata_load_ms"),
@@ -2181,7 +2190,7 @@ class CeaserOrchestrator:
             "size": 0,
             "reference": result.reference or "",
             "origin": "generated",
-            "caption": f"Generated using {image_model_preference or settings.huggingface_image_model}",
+            "caption": f"Generated using {result.model_id or settings.huggingface_image_model}",
             "alt_text": message[:160],
             "title": "Generated image",
         }
@@ -2191,7 +2200,7 @@ class CeaserOrchestrator:
             conversation_id=conversation_id,
             conversation_context={"messages": [{"content": message}]},
             follow_up_trace={"follow_up_detected": False, "active_topic": None, "resolved_entities": [], "context_source": []},
-            response=f"Generated an image with {image_model_preference or settings.huggingface_image_model}.",
+            response=f"Generated an image with {result.model_id or settings.huggingface_image_model}.",
             selected_agents=["Nova"],
             workflow_type="image_generation",
             summary="Image generation completed.",

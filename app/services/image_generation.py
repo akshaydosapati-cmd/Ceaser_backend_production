@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Literal
 
-import httpx
+from huggingface_hub import InferenceClient
 from pydantic import BaseModel, Field
 
 from app.core.config.settings import settings
@@ -30,6 +31,7 @@ class ImageGenerationResult(BaseModel):
     width: int | None = None
     height: int | None = None
     provider: str | None = None
+    model_id: str | None = None
     status: Literal["completed", "failed", "image_generation_unavailable"]
     error_code: str | None = None
 
@@ -53,51 +55,39 @@ class HuggingFaceImageGenerationProvider(ImageGenerationProvider):
         if not self.available():
             return [ImageGenerationResult(status="image_generation_unavailable", error_code="image_generation_unavailable")]
 
-        model_id = request.model_id or settings.huggingface_image_model
+        model_ids = list(dict.fromkeys([request.model_id, *settings.huggingface_image_models]))
         width, height = self._dimensions(request.size, request.aspect_ratio)
-        payload = {
-            "inputs": self._build_prompt(request),
-            "parameters": {
-                "width": width,
-                "height": height,
-                "guidance_scale": 4.5,
-                "num_inference_steps": 28,
-            },
-        }
-        if request.negative_prompt:
-            payload["parameters"]["negative_prompt"] = request.negative_prompt
-
-        endpoint = f"https://router.huggingface.co/hf-inference/models/{model_id}"
-        headers = {
-            "Authorization": f"Bearer {settings.huggingface_api_key}",
-            "Content-Type": "application/json",
-            "Accept": "image/*,application/octet-stream",
-        }
-        timeout = httpx.Timeout(connect=settings.llm_connect_timeout_seconds, read=settings.llm_total_timeout_seconds, write=settings.llm_total_timeout_seconds, pool=settings.llm_total_timeout_seconds)
-
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(endpoint, headers=headers, json=payload)
-                if response.status_code >= 400:
-                    return [ImageGenerationResult(status="failed", error_code=f"http_{response.status_code}", provider="huggingface")]
-                content_type = (response.headers.get("content-type") or "image/png").split(";", 1)[0].strip() or "image/png"
+        last_error = "provider_error"
+        client = InferenceClient(provider="auto", api_key=settings.huggingface_api_key, timeout=settings.llm_total_timeout_seconds)
+        for model_id in (model for model in model_ids if model):
+            try:
+                image = client.text_to_image(
+                    self._build_prompt(request),
+                    model=model_id,
+                    width=width,
+                    height=height,
+                    guidance_scale=4.5,
+                    num_inference_steps=28,
+                    negative_prompt=request.negative_prompt,
+                )
+                buffer = BytesIO()
+                image.save(buffer, format=request.output_format.upper().replace("JPG", "JPEG"))
+                content = buffer.getvalue()
+                content_type = f"image/{'jpeg' if request.output_format == 'jpeg' else request.output_format}"
+                if not content:
+                    last_error = "invalid_response"
+                    continue
                 ext = self._extension(content_type, request.output_format)
                 filename = f"ceaser-image-{user_id[:8]}-{abs(hash((request.prompt, model_id))) & 0xFFFFFFFF:x}.{ext}"
-                storage_path = StorageService().store(user_id=user_id, filename=filename, content=response.content, content_type=content_type)
+                storage_path = StorageService().store(user_id=user_id, filename=filename, content=content, content_type=content_type)
                 file = FileService(self.db).create(user_id=user_id, project_id=None, name=filename, file_type=ext, storage_path=storage_path)
-                return [
-                    ImageGenerationResult(
-                        asset_id=file.id,
-                        reference=storage_path,
-                        mime_type=content_type,
-                        width=width,
-                        height=height,
-                        provider="huggingface",
-                        status="completed",
-                    )
-                ]
-        except httpx.HTTPError:
-            return [ImageGenerationResult(status="failed", error_code="provider_error", provider="huggingface")]
+                return [ImageGenerationResult(asset_id=file.id, reference=storage_path, mime_type=content_type, width=width, height=height, provider="huggingface", model_id=model_id, status="completed")]
+            except Exception as exc:  # Provider SDK exceptions differ by routed provider.
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                last_error = f"http_{status}" if status else "provider_error"
+                if status in {401, 403}:
+                    break
+        return [ImageGenerationResult(status="failed", error_code=last_error, provider="huggingface")]
 
     @staticmethod
     def _build_prompt(request: ImageGenerationRequest) -> str:
