@@ -116,11 +116,18 @@ class ModelRouter:
         # Purpose-configured coding models should lead software work. General
         # providers remain eligible as fallbacks when those models are down.
         workload_fit = 60 if request.workload.value == "software_engineering" and model.allowed_workloads == {request.workload} else 0
+        free_coding_bonus = 0
+        if (
+            request.workload.value == "software_engineering"
+            and model.provider_id == "huggingface"
+            and request.policy != RoutingPolicy.QUALITY
+        ):
+            free_coding_bonus = 40
         if request.policy == RoutingPolicy.FAST: policy = model.relative_speed * 4 + model.relative_quality + (11 - model.relative_cost)
         elif request.policy == RoutingPolicy.QUALITY: policy = model.relative_quality * 4 + model.relative_speed + (11 - model.relative_cost)
         elif request.policy == RoutingPolicy.ECONOMY: policy = (11 - model.relative_cost) * 4 + model.relative_quality + model.relative_speed
         else: policy = model.relative_quality * 2 + model.relative_speed * 2 + (11 - model.relative_cost) * 2
-        return float(100 + preferred + policy + model.priority + primary + workload_fit)
+        return float(100 + preferred + policy + model.priority + primary + workload_fit + free_coding_bonus)
 
     @staticmethod
     def _reason(model, request: ModelRequest) -> str:

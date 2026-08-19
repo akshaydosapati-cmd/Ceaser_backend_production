@@ -155,7 +155,7 @@ def test_missing_credentials_disable_configured_models_without_crash(monkeypatch
     monkeypatch.setattr(settings, "nvidia_api_key", None)
     registry = ModelRegistry()
     assert registry.enabled() == []
-    assert len(registry.safe_metadata()) == 5
+    assert len(registry.safe_metadata()) == 8
 
 
 def test_observability_never_contains_secrets():

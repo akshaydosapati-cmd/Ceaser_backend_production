@@ -44,8 +44,12 @@ class Settings(BaseSettings):
     )
     groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
     huggingface_model: str = Field(
-        default="meta-llama/Llama-3.1-8B-Instruct",
+        default="mistralai/Devstral-Small-2507",
         validation_alias=AliasChoices("HUGGINGFACE_MODEL", "HF_MODEL"),
+    )
+    huggingface_coding_models_raw: str = Field(
+        default="Qwen/Qwen2.5-Coder-7B-Instruct,bigcode/starcoder2-3b,deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
+        alias="HUGGINGFACE_CODING_MODELS",
     )
     huggingface_base_url: str = Field(
         default="https://router.huggingface.co/v1/chat/completions",
@@ -235,6 +239,21 @@ class Settings(BaseSettings):
             }
         return normalized
 
+
+    @property
+    def huggingface_coding_models(self) -> list[str]:
+        models = [self.huggingface_model.strip()]
+        models.extend(
+            model.strip()
+            for model in self.huggingface_coding_models_raw.split(",")
+            if model.strip()
+        )
+        deduped: list[str] = []
+        for model in models:
+            if model not in deduped:
+                deduped.append(model)
+        return deduped
+
     @property
     def credit_costs(self) -> dict[str, int]:
         try:
@@ -242,6 +261,7 @@ class Settings(BaseSettings):
             return {str(key): max(0, int(value)) for key, value in parsed.items()}
         except (ValueError, TypeError, json.JSONDecodeError):
             return {"ai_conversation": 2, "research": 10, "agent_workflow": 20, "bolt_development": 30, "local_command": 0}
+
 
     @property
     def admin_emails(self) -> set[str]:
