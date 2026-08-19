@@ -2252,15 +2252,26 @@ class CeaserOrchestrator:
         return self._is_explicit_workflow_creation_request(message)
 
     def _is_explicit_workflow_creation_request(self, message: str) -> bool:
-        """Chat requests never create persistent workflow runs.
+        """Route explicit deliverable requests through the artifact workflow.
 
-        Project workflow documents are generated through the document flow and
-        saved in Files. Persistent workflow runs are reserved for dedicated
-        workflow endpoints, preventing ordinary chat prompts from polluting
-        the workflow output with orchestration metadata.
+        Ordinary questions remain chat turns. A request only becomes a workflow
+        when it contains both a creation intent and a concrete deliverable, so
+        asking about documents or presentations cannot create files by accident.
         """
-        _ = message
-        return False
+        normalized = " ".join(message.lower().split())
+        if re.search(r"\b(how (?:do|can|should) (?:i|we)|how to|explain|what is|why)\b", normalized):
+            return False
+        creation_intent = re.search(
+            r"\b(create|make|build|generate|prepare|produce|write|draft|turn|convert)\b",
+            normalized,
+        )
+        deliverable = re.search(
+            r"\b(presentation|slides?|slide deck|pitch deck|pptx|document|docx|pdf|"
+            r"report|revision sheet|study notes?|spreadsheet|workbook|excel|xlsx|"
+            r"business plan|research report|study plan|resume|interview kit|demo plan|idea board)\b",
+            normalized,
+        )
+        return bool(creation_intent and deliverable)
 
     def _should_run_research(self, message: str, selected_agents: list[str]) -> bool:
         normalized = message.lower()

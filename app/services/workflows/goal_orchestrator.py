@@ -20,7 +20,7 @@ class GoalWorkflowOrchestrator:
         requested: list[tuple[str, str | None, str]] = []
         if re.search(r"\b(research|latest|current|sources?|find out)\b", lowered):
             requested.append(("research.execute", "Alex", "research_result"))
-        if re.search(r"\b(report|document|docx|pdf|revision sheet|notes)\b", lowered):
+        if re.search(r"\b(report|document|docx|pdf|revision sheet|notes|study plan|resume|interview kit|demo plan|idea board)\b", lowered):
             requested.append(("document.create", "Atlas", "document_artifact"))
         if re.search(r"\b(presentation|slides?|deck|speaker notes)\b", lowered):
             requested.append(("presentation.create", "Nova", "presentation_artifact"))
