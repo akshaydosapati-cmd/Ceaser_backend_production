@@ -35,8 +35,28 @@ class ResponsePipeline:
             trace["prompt_tokens"] = trace["context_tokens"]
             trace["prompt_build_ms"] = round((perf_counter() - prompt_started) * 1000, 2)
             trace["max_output_tokens"] = output_budget
+        emitted: list[str] = []
         async for chunk in stream_text(instructions=instructions, input_text=context_text, max_output_tokens=output_budget, trace=trace, model_request=model_request):
+            emitted.append(chunk)
             yield chunk
+        if trace is not None and trace.get("finish_reason") == "length" and emitted:
+            continuation_trace: dict[str, Any] = {}
+            partial = "".join(emitted)
+            continuation_input = (
+                f"Original request:\n{message}\n\nOutput so far:\n{partial}\n\n"
+                "Continue exactly where the output stopped. Do not restart or repeat prior content. "
+                "Finish all open code blocks and complete the requested answer."
+            )
+            async for chunk in stream_text(
+                instructions=instructions,
+                input_text=continuation_input,
+                max_output_tokens=min(output_budget, 3000),
+                trace=continuation_trace,
+                model_request=model_request,
+            ):
+                yield chunk
+            trace["continuation_used"] = True
+            trace["continuation_finish_reason"] = continuation_trace.get("finish_reason")
 
     @staticmethod
     def _model_request(*, message: str, context: dict, streaming: bool, context_text: str):

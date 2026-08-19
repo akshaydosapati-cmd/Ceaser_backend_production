@@ -71,6 +71,7 @@ class NvidiaProvider(LLMProvider):
                         trace["stream_opened"] = True
                         trace["provider_connect_ms"] = round((perf_counter() - started) * 1000, 2)
                     emitted_content = False
+                    finish_reason: str | None = None
                     non_sse_lines: list[str] = []
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"):
@@ -85,6 +86,8 @@ class NvidiaProvider(LLMProvider):
                         except json.JSONDecodeError:
                             continue
                         choice = (chunk.get("choices") or [{}])[0]
+                        if choice.get("finish_reason"):
+                            finish_reason = str(choice["finish_reason"])
                         delta = (choice.get("delta") or {}).get("content")
                         if isinstance(delta, str) and delta:
                             emitted_content = True
@@ -108,6 +111,7 @@ class NvidiaProvider(LLMProvider):
                             provider="nvidia", category="invalid_response",
                         )
                     if trace is not None:
+                        trace["finish_reason"] = finish_reason
                         trace["stream_completed"] = True
         except (asyncio.CancelledError, GeneratorExit):
             if trace is not None:
