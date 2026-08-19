@@ -2247,10 +2247,10 @@ class CeaserOrchestrator:
 
     @staticmethod
     def _should_run_live_research(*, route: KnowledgeRoute, has_internal_context: bool) -> bool:
-        """Search the web only after user-scoped context has no usable evidence."""
+        """Search only freshness/external routes after user-scoped evidence misses."""
         if has_internal_context:
             return False
-        return route in {KnowledgeRoute.GENERAL, KnowledgeRoute.RESEARCH}
+        return route is KnowledgeRoute.RESEARCH
 
     @staticmethod
     def _has_relevant_internal_context(

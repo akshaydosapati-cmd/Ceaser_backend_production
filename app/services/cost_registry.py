@@ -102,6 +102,16 @@ class CostRegistry:
             ComputeUnitService(self.db).convert_event(event)
             return calculation
         if not event.provider:
+            from app.services.capabilities.registry import capability_registry
+            manifest = capability_registry.resolve_manifest(event.capability_key or event.operation)
+            if manifest.cost_class == "free" and manifest.execution_type in {"local", "artifact"}:
+                event.pricing_status = "priced"
+                event.actual_cost = 0
+                calculation = CostCalculation("priced", Decimal("0"), None, None, "free", "manifest_free")
+                from app.services.compute_unit_service import ComputeUnitService
+                ComputeUnitService(self.db).convert_event(event, force=force)
+                self.db.flush()
+                return calculation
             event.pricing_status = "unpriced"
             event.extra_metadata = {**(event.extra_metadata or {}), "pricing_reason": "provider_missing"}
             calculation = CostCalculation("unpriced", None, None, None, None, "provider_missing")

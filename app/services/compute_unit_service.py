@@ -73,13 +73,15 @@ class ComputeUnitService:
         )
 
     def calculate(self, *, actual_cost: Decimal | int | float | str | None, currency: str | None, at: datetime | None = None) -> ComputeUnitCalculation:
-        if actual_cost is None or not currency:
+        if actual_cost is None:
             return ComputeUnitCalculation("unpriced", None, None, None, "cost_unpriced")
         cost = _decimal(actual_cost)
         if cost < 0:
             return ComputeUnitCalculation("error", None, None, None, "negative_cost")
         if cost == 0:
             return ComputeUnitCalculation("free", Decimal("0").quantize(_PRECISION), None, None)
+        if not currency:
+            return ComputeUnitCalculation("unpriced", None, None, None, "currency_missing")
         policy = self.resolve(currency=currency, at=at)
         if not policy:
             logger.warning("compute_unit_policy_missing currency=%s", currency[:10])
