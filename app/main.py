@@ -83,23 +83,6 @@ def create_app() -> FastAPI:
     configure_application_logging()
     app = FastAPI(title="CEASER Backend", version="0.1.0", lifespan=lifespan)
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=list(
-            dict.fromkeys(
-                [
-                    *settings.cors_origins,
-                    "https://heyceaser.in",
-                    "https://www.heyceaser.in",
-                    "ceaser-app://bundle",
-                ]
-            )
-        ),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     @app.middleware("http")
     async def observability_middleware(request: Request, call_next):
         request_id = request.headers.get("x-request-id") or uuid4().hex
@@ -119,9 +102,50 @@ def create_app() -> FastAPI:
         )
         return response
 
+    # Keep CORS outside application middleware so normalized error responses
+    # retain their origin headers as well as successful responses.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(
+            dict.fromkeys(
+                [
+                    *settings.cors_origins,
+                    "https://heyceaser.in",
+                    "https://www.heyceaser.in",
+                    "ceaser-app://bundle",
+                ]
+            )
+        ),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.exception_handler(AIServiceUnavailableError)
     async def ai_service_unavailable_handler(request: Request, exc: AIServiceUnavailableError) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": exc.public_message})
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", None)
+        logger.exception("unhandled_request_error path=%s request_id=%s", request.url.path, request_id)
+        origin = request.headers.get("origin")
+        allowed_origins = {
+            *settings.cors_origins,
+            "https://heyceaser.in",
+            "https://www.heyceaser.in",
+            "ceaser-app://bundle",
+        }
+        headers = {"X-Request-Id": request_id or ""}
+        if origin in allowed_origins:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+            headers["Vary"] = "Origin"
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "We couldn't complete your request. Please try again."},
+            headers=headers,
+        )
 
     app.include_router(auth_router)
     app.include_router(admin_router)

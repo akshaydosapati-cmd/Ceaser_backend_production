@@ -55,19 +55,20 @@ def ceaser_public_demo(payload: CeaserDemoRequest):
 
 @router.post("/chat", response_model=CeaserChatResponse)
 def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    user_id = user.id
     billing_id = f"chat:{payload.request_id or uuid.uuid4().hex}"
     credits = CreditService(db)
     try:
-        reservation = credits.reserve(user.id, billing_id, "ai_conversation")
+        reservation = credits.reserve(user_id, billing_id, "ai_conversation")
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=402, detail="Insufficient CEASER credits.") from exc
     try:
         desktop_fast = _maybe_desktop_fast_response(payload)
         if desktop_fast is not None:
-            credits.settle(user.id, billing_id, reservation.estimated_credits, meaningful_output=True)
+            credits.settle(user_id, billing_id, reservation.estimated_credits, meaningful_output=True)
             return desktop_fast
         response = CeaserOrchestrator(db).handle_message(
-            user_id=user.id,
+            user_id=user_id,
             message=payload.message,
             conversation_id=payload.conversation_id,
             file_ids=payload.file_ids,
@@ -80,21 +81,23 @@ def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_cu
             response_mode=payload.response_mode,
             image_model_preference=payload.image_model_preference,
         )
-        response["rich_response"] = RichResponseService.compose(response,user_id=user.id,task_id=payload.request_id).model_dump(mode="json")
+        response["rich_response"] = RichResponseService.compose(response,user_id=user_id,task_id=payload.request_id).model_dump(mode="json")
         AuditService(db).record(
-            user_id=user.id,
+            user_id=user_id,
             action="message_created",
             resource_type="conversation",
             resource_id=payload.conversation_id,
             metadata={"selected_agents": response.get("selected_agents", []), "memory_count": len(response.get("memories_used", []))},
         )
-        credits.settle(user.id, billing_id, reservation.estimated_credits, meaningful_output=bool(response.get("response")))
+        credits.settle(user_id, billing_id, reservation.estimated_credits, meaningful_output=bool(response.get("response")))
         return response
     except ValueError as exc:
-        credits.release(user.id, billing_id)
+        db.rollback()
+        credits.release(user_id, billing_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception:
-        credits.release(user.id, billing_id)
+        db.rollback()
+        credits.release(user_id, billing_id)
         raise
 
 
@@ -425,6 +428,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             yield event("response.failed", {"id": request_id, "status": "failed", "error": {"category": "validation", "message": str(exc), "retryable": False}})
             yield event("error", {"message": str(exc)})
         except Exception:
+            db.rollback()
             logger.exception("ceaser_chat_stream_failed user_id=%s conversation_id=%s", user_id, conversation_id)
             yield event("response.failed", {"id": request_id, "status": "failed", "error": {"category": "internal", "message": "We couldn't complete your request. Please try again.", "retryable": True}})
             yield event("error", {"message": "We couldn't complete your request. Please try again."})
@@ -432,6 +436,7 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             if completed_meaningfully:
                 credits.settle(user_id, billing_id, reservation.estimated_credits, meaningful_output=True)
             else:
+                db.rollback()
                 credits.release(user_id, billing_id)
 
     # Keep SSE events flowing through hosting proxies as they are produced.

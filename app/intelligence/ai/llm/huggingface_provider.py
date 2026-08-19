@@ -267,10 +267,15 @@ class HuggingFaceProvider(LLMProvider):
                 provider="huggingface",
                 category="authentication",
             )
-        if status_code == 404 or "model" in lowered and ("not found" in lowered or "does not exist" in lowered):
+        if status_code == 404 or "model" in lowered and (
+            "not found" in lowered
+            or "does not exist" in lowered
+            or "not supported" in lowered
+            or "model_not_supported" in lowered
+        ):
             return AIServiceUnavailableError(
                 f"huggingface model unavailable model={model}",
-                retryable=False,
+                retryable=True,
                 provider="huggingface",
                 category="model_unavailable",
             )

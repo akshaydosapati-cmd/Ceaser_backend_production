@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import NAMESPACE_URL, uuid5
+
 from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
@@ -19,12 +21,17 @@ class AuditService:
         metadata: dict | None = None,
         commit: bool = True,
     ) -> AuditLog:
+        safe_metadata = dict(metadata or {})
+        normalized_resource_id = resource_id
+        if resource_id and len(resource_id) > 36:
+            safe_metadata.setdefault("resource_reference", resource_id)
+            normalized_resource_id = str(uuid5(NAMESPACE_URL, resource_id))
         log = AuditLog(
             user_id=user_id,
             action=action,
             resource_type=resource_type,
-            resource_id=resource_id,
-            extra_metadata=metadata or {},
+            resource_id=normalized_resource_id,
+            extra_metadata=safe_metadata,
         )
         self.db.add(log)
         self.db.flush()
