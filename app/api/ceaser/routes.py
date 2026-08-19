@@ -75,6 +75,10 @@ def ceaser_chat(payload: CeaserChatRequest, user: Annotated[User, Depends(get_cu
             parent_message_id=payload.parent_message_id,
             device_id=payload.device_id,
             desktop_file_context=payload.desktop_file_context,
+            model_preference=payload.model_preference,
+            force_live_web_search=payload.force_live_web_search,
+            response_mode=payload.response_mode,
+            image_model_preference=payload.image_model_preference,
         )
         response["rich_response"] = RichResponseService.compose(response,user_id=user.id,task_id=payload.request_id).model_dump(mode="json")
         AuditService(db).record(
@@ -201,6 +205,10 @@ def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatReq
             parent_message_id=payload.parent_message_id,
             device_id=payload.device_id,
             desktop_file_context=payload.desktop_file_context,
+            model_preference=payload.model_preference,
+            force_live_web_search=payload.force_live_web_search,
+            response_mode=payload.response_mode,
+            image_model_preference=payload.image_model_preference,
         )
         credits.settle(user_id, billing_id, settings.credit_costs.get("ai_conversation", 5), meaningful_output=bool(response))
         reserved = False
@@ -259,6 +267,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 file_ids=file_ids,
                 request_id=payload.request_id or request_id,
                 parent_message_id=payload.parent_message_id,
+                model_preference=payload.model_preference,
+                force_live_web_search=payload.force_live_web_search,
             )
             stage_marks["prepared"] = perf_counter()
             trace["retrieval_time_ms"] = prepared.get("observability", {}).get("retrieval_time_ms")

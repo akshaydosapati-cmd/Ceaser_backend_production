@@ -42,11 +42,13 @@ class ResponsePipeline:
     def _model_request(*, message: str, context: dict, streaming: bool, context_text: str):
         merged = context.get("merged_contributions", {}) if isinstance(context, dict) else {}
         selected = merged.get("selected_agents", []) if isinstance(merged, dict) else []
+        preferred_model = str(context.get("model_preference") or "").strip() or None
+        preferred_model_ids = {preferred_model} if preferred_model and preferred_model != "auto" else set()
         if selected:
-            return request_for_agents([str(item).lower() for item in selected], streaming=streaming, context_size_estimate=max(1, len(context_text) // 4))
+            return request_for_agents([str(item).lower() for item in selected], streaming=streaming, context_size_estimate=max(1, len(context_text) // 4), preferred_model_ids=preferred_model_ids or None)
         normalized = message.lower()
         task_type = "reasoning" if any(term in normalized for term in ("compare", "strategy", "analyze", "analyse", "trade-off", "why")) else "general"
-        return request_for_chat(streaming=streaming, context_size_estimate=max(1, len(context_text) // 4), task_type=task_type)
+        return request_for_chat(streaming=streaming, context_size_estimate=max(1, len(context_text) // 4), task_type=task_type, preferred_model_ids=preferred_model_ids or None)
 
     @staticmethod
     def _stream_output_budget(*, message: str, context: dict) -> int:

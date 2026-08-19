@@ -77,6 +77,7 @@ class ModelRequest(BaseModel):
     workload: Workload = Workload.NORMAL_CHAT
     required_capabilities: frozenset[str] = frozenset({"general"})
     preferred_capabilities: frozenset[str] = frozenset()
+    preferred_model_ids: frozenset[str] = frozenset()
     context_size_estimate: int = Field(default=0, ge=0)
     needs_tools: bool = False
     needs_vision: bool = False

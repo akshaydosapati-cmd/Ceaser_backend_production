@@ -51,6 +51,7 @@ class Settings(BaseSettings):
         default="Qwen/Qwen2.5-Coder-7B-Instruct,bigcode/starcoder2-3b,deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
         alias="HUGGINGFACE_CODING_MODELS",
     )
+    huggingface_image_model: str = Field(default="black-forest-labs/FLUX.1-schnell", alias="HUGGINGFACE_IMAGE_MODEL")
     huggingface_base_url: str = Field(
         default="https://router.huggingface.co/v1/chat/completions",
         validation_alias=AliasChoices("HUGGINGFACE_BASE_URL", "HF_BASE_URL"),

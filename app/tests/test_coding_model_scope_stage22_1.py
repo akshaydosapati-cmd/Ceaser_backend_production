@@ -110,6 +110,12 @@ def test_interactive_bolt_policy_prefers_faster_huggingface(monkeypatch, policy)
     assert selected[0].model.provider_id == "huggingface"
 
 
+def test_chat_model_preference_can_select_huggingface_for_general_chat(monkeypatch):
+    request = request_for_chat(preferred_model_ids={"huggingface-qwen-qwen2-5-coder-7b-instruct"})
+    selected = ModelRouter(scoped_registry(monkeypatch)).selections(request)
+    assert selected[0].model.model_id == "huggingface-qwen-qwen2-5-coder-7b-instruct"
+
+
 def test_quality_bolt_policy_prefers_nemotron_ultra(monkeypatch):
     selected = ModelRouter(scoped_registry(monkeypatch)).selections(
         request_for_agent("bolt", policy=RoutingPolicy.QUALITY)

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.core.config.settings import settings
 from app.agents.registry import AgentRegistry
 from app.agents.v2 import AgentOrchestrator as SpecialistAgentOrchestrator
 from app.engines.research_engine import ResearchEngine
@@ -28,6 +29,7 @@ from app.services.orchestrator.suggestion_engine import SuggestionEngine
 from app.services.project_service import ProjectService
 from app.services.orchestrator.user_context_resolver import UserContextResolver
 from app.services.local_bolt_dispatcher import LocalBoltDispatcher
+from app.services.image_generation import HuggingFaceImageGenerationProvider, ImageGenerationRequest, ImageGenerationService
 from app.services.github_project_service import GitHubProjectService
 from app.services.device_gateway_service import DeviceGatewayService
 from app.services.browser_automation_service import BrowserAutomationService
@@ -74,8 +76,22 @@ class CeaserOrchestrator:
         parent_message_id: str | None = None,
         device_id: str | None = None,
         desktop_file_context: dict | None = None,
+        model_preference: str | None = None,
+        force_live_web_search: bool = False,
+        response_mode: str = "chat",
+        image_model_preference: str | None = None,
     ) -> dict:
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
+        if str(response_mode or "chat").lower() == "image":
+            return self._generate_image_response(
+                user_id=user_id,
+                message=message,
+                conversation_id=conversation_id,
+                request_id=request_id,
+                parent_message_id=parent_message_id,
+                image_model_preference=image_model_preference,
+            )
+
         effective_message = message
         if attached_documents:
             names = ", ".join(document["name"] for document in attached_documents)
@@ -296,6 +312,8 @@ class CeaserOrchestrator:
                 },
                 "report_request": report_request,
                 "research_result": research_result.model_dump() if research_result else None,
+                "model_preference": model_preference,
+                "force_live_web_search": force_live_web_search,
             },
         )
         captured_response_memories = self.memory_capture.capture_interaction(
@@ -387,6 +405,8 @@ class CeaserOrchestrator:
         *,
         request_id: str | None = None,
         parent_message_id: str | None = None,
+        model_preference: str | None = None,
+        force_live_web_search: bool = False,
     ) -> dict[str, Any]:
         started = perf_counter()
         request_trace: dict[str, Any] = {}
@@ -546,10 +566,10 @@ class CeaserOrchestrator:
             memories=memory_first_results,
         )
         tool_calls_started = perf_counter()
-        web_search_requested = not research_result and self._should_run_live_research(
+        web_search_requested = force_live_web_search or (not research_result and self._should_run_live_research(
             route=route_decision.route,
             has_internal_context=has_internal_context,
-        )
+        ))
         if web_search_requested:
             research_result = self._maybe_research(
                 query=self._research_query(message, conversation_context),
@@ -634,6 +654,8 @@ class CeaserOrchestrator:
                     "summary": workflow.result_summary if workflow else "",
                     "workflow_response": workflow.final_response if workflow else "",
                 },
+                "model_preference": model_preference,
+                "force_live_web_search": force_live_web_search,
                 "report_request": report_request,
                 "research_result": research_result.model_dump() if research_result else None,
             },
@@ -1291,7 +1313,10 @@ class CeaserOrchestrator:
         users = data.get("users") or []
         if users:
             lines.extend(["", "Workspace members visible:"])
-            lines.extend(f"- {user.get('name') or 'Unnamed user'}{f' - {user.get('email')}' if user.get('email') else ''}" for user in users[:8])
+            for user in users[:8]:
+                name = user.get("name") or "Unnamed user"
+                email = user.get("email")
+                lines.append(f"- {name}" + (f" - {email}" if email else ""))
         return "\n".join(lines)
 
     def _format_notion_workspace_tool_result(self, data: dict) -> str:
@@ -2105,6 +2130,66 @@ class CeaserOrchestrator:
         )
 
     @staticmethod
+    def _generate_image_response(
+        self,
+        *,
+        user_id: str,
+        message: str,
+        conversation_id: str | None,
+        request_id: str | None,
+        parent_message_id: str | None,
+        image_model_preference: str | None,
+    ) -> dict:
+        provider = HuggingFaceImageGenerationProvider(self.db)
+        service = ImageGenerationService(provider=provider)
+        request = ImageGenerationRequest(
+            prompt=message,
+            model_id=image_model_preference or None,
+            size="1024x1024",
+            count=1,
+        )
+        result = service.generate(user_id, request)[0]
+        if result.status != "completed" or not result.asset_id:
+            response = "CEASER could not generate the image right now. Please try again."
+            return self._direct_response(
+                user_id=user_id,
+                conversation=self._get_conversation(conversation_id),
+                conversation_id=conversation_id,
+                conversation_context={"messages": [{"content": message}]},
+                follow_up_trace={"follow_up_detected": False, "active_topic": None, "resolved_entities": [], "context_source": []},
+                response=response,
+                selected_agents=["Nova"],
+                workflow_type="image_generation",
+                summary="Image generation failed.",
+                request_id=request_id,
+                parent_message_id=parent_message_id,
+            )
+        generated_image = {
+            "asset_id": result.asset_id,
+            "filename": f"ceaser-image-{result.asset_id}.png",
+            "mime_type": result.mime_type or "image/png",
+            "size": 0,
+            "reference": result.reference or "",
+            "origin": "generated",
+            "caption": f"Generated using {image_model_preference or settings.huggingface_image_model}",
+            "alt_text": message[:160],
+            "title": "Generated image",
+        }
+        return self._direct_response(
+            user_id=user_id,
+            conversation=self._get_conversation(conversation_id),
+            conversation_id=conversation_id,
+            conversation_context={"messages": [{"content": message}]},
+            follow_up_trace={"follow_up_detected": False, "active_topic": None, "resolved_entities": [], "context_source": []},
+            response=f"Generated an image with {image_model_preference or settings.huggingface_image_model}.",
+            selected_agents=["Nova"],
+            workflow_type="image_generation",
+            summary="Image generation completed.",
+            request_id=request_id,
+            parent_message_id=parent_message_id,
+            response_metadata={"generated_image": generated_image},
+        )
+
     def _should_include_research_images(message: str, selected_agents: list[str]) -> bool:
         """Use image search only when pictures materially improve the answer."""
         normalized = message.lower()

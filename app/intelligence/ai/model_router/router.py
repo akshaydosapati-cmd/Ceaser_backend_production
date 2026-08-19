@@ -97,8 +97,10 @@ class ModelRouter:
             return aliases.get(category, FailureCategory.UNKNOWN)
 
     def _eligible(self, model, request: ModelRequest) -> bool:
-        if request.workload not in model.allowed_workloads: return False
-        if not request.required_capabilities.issubset(model.capabilities): return False
+        preferred_override = self._matches_preference(model, request.preferred_model_ids)
+        if not preferred_override:
+            if request.workload not in model.allowed_workloads: return False
+            if not request.required_capabilities.issubset(model.capabilities): return False
         if request.needs_tools and not model.supports_tools: return False
         if request.needs_vision and not model.supports_vision: return False
         if request.needs_streaming and not model.supports_streaming: return False
@@ -109,8 +111,7 @@ class ModelRouter:
         if state and state["state"] == HealthState.COOLDOWN: state.update(state=HealthState.DEGRADED, cooldown_until=None)
         return True
 
-    @staticmethod
-    def _score(model, request: ModelRequest) -> float:
+    def _score(self, model, request: ModelRequest) -> float:
         preferred = len(request.preferred_capabilities.intersection(model.capabilities)) * 12
         primary = 50 if request.workload.value == "normal_chat" and model.provider_id == settings.llm_provider.strip().lower() else 0
         # Purpose-configured coding models should lead software work. General
@@ -123,16 +124,54 @@ class ModelRouter:
             and request.policy != RoutingPolicy.QUALITY
         ):
             free_coding_bonus = 40
+        preferred_model_bonus = 0
+        if self._matches_preference(model, request.preferred_model_ids):
+            preferred_model_bonus = 1000
         if request.policy == RoutingPolicy.FAST: policy = model.relative_speed * 4 + model.relative_quality + (11 - model.relative_cost)
         elif request.policy == RoutingPolicy.QUALITY: policy = model.relative_quality * 4 + model.relative_speed + (11 - model.relative_cost)
         elif request.policy == RoutingPolicy.ECONOMY: policy = (11 - model.relative_cost) * 4 + model.relative_quality + model.relative_speed
         else: policy = model.relative_quality * 2 + model.relative_speed * 2 + (11 - model.relative_cost) * 2
-        return float(100 + preferred + policy + model.priority + primary + workload_fit + free_coding_bonus)
+        return float(100 + preferred + policy + model.priority + primary + workload_fit + free_coding_bonus + preferred_model_bonus)
 
     @staticmethod
     def _reason(model, request: ModelRequest) -> str:
         preferred = sorted(request.preferred_capabilities.intersection(model.capabilities))
         return f"workload:{request.workload.value};required:{','.join(sorted(request.required_capabilities))};preferred:{','.join(preferred)};policy:{request.policy.value};health:eligible"
+
+    @staticmethod
+    def _matches_preference(model, preferred_model_ids: frozenset[str]) -> bool:
+        if not preferred_model_ids:
+            return False
+        identities = {
+            model.model_id,
+            model.model_id.lower(),
+            model.provider_model_name,
+            model.provider_model_name.lower(),
+            model.provider_model_name.split("/")[-1],
+            model.provider_model_name.split("/")[-1].lower(),
+            model.display_name,
+            model.display_name.lower(),
+            f"{model.provider_id}-{model.model_id}",
+            f"{model.provider_id}-{model.model_id}".lower(),
+            f"{model.provider_id}-{model.provider_model_name}",
+            f"{model.provider_id}-{model.provider_model_name}".lower(),
+        }
+        compact_identities = {ModelRouter._compact_identity(identity) for identity in identities}
+        for preferred in preferred_model_ids:
+            compact_preferred = ModelRouter._compact_identity(preferred)
+            if compact_preferred in compact_identities:
+                return True
+            if any(
+                compact_preferred.endswith(identity) or identity.endswith(compact_preferred)
+                for identity in compact_identities
+                if identity
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _compact_identity(value: str) -> str:
+        return "".join(ch for ch in value.lower() if ch.isalnum())
 
     def _state(self, key: str) -> dict[str, Any]:
         return self._health.setdefault(key, {"state": HealthState.UNKNOWN, "failures": 0, "cooldown_until": None, "last_error": None, "total_ms": None, "first_token_ms": None})

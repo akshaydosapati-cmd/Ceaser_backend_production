@@ -16,6 +16,10 @@ class CeaserChatRequest(BaseModel):
     original_message: str | None = None
     device_id: str | None = Field(default=None, max_length=120)
     desktop_file_context: dict | None = None
+    model_preference: str | None = None
+    force_live_web_search: bool = False
+    response_mode: str = "chat"
+    image_model_preference: str | None = None
 
 
 class RankedMemory(BaseModel):
