@@ -85,7 +85,16 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(dict.fromkeys([*settings.cors_origins, "ceaser-app://bundle"])),
+        allow_origins=list(
+            dict.fromkeys(
+                [
+                    *settings.cors_origins,
+                    "https://heyceaser.in",
+                    "https://www.heyceaser.in",
+                    "ceaser-app://bundle",
+                ]
+            )
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

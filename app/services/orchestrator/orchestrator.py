@@ -82,7 +82,7 @@ class CeaserOrchestrator:
         image_model_preference: str | None = None,
     ) -> dict:
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [])
-        if str(response_mode or "chat").lower() == "image":
+        if str(response_mode or "chat").lower() == "image" or self._is_image_generation_request(message):
             return self._generate_image_response(
                 user_id=user_id,
                 message=message,
@@ -2190,6 +2190,7 @@ class CeaserOrchestrator:
             response_metadata={"generated_image": generated_image},
         )
 
+    @staticmethod
     def _should_include_research_images(message: str, selected_agents: list[str]) -> bool:
         """Use image search only when pictures materially improve the answer."""
         normalized = message.lower()
@@ -2216,6 +2217,17 @@ class CeaserOrchestrator:
             "animals", "food dishes", "products", "phones", "laptops",
         )
         return any(term in normalized for term in visual_subjects)
+
+    @staticmethod
+    def _is_image_generation_request(message: str) -> bool:
+        """Recognize explicit creation requests without treating ordinary visual queries as generation."""
+        normalized = " ".join(str(message or "").lower().split())
+        creation_intent = re.search(r"\b(?:create|generate|make|design|draw|illustrate)\b", normalized)
+        image_subject = re.search(
+            r"\b(?:image|picture|photo|illustration|artwork|poster|wallpaper|logo|thumbnail)\b",
+            normalized,
+        )
+        return bool(creation_intent and image_subject)
 
     def _should_run_heavy_pipeline(self, message: str) -> bool:
         return self._is_explicit_workflow_creation_request(message)

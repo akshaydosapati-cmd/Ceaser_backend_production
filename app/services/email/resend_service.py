@@ -5,7 +5,8 @@ import resend
 
 def send_test_email(to_email: str):
     api_key = os.getenv("RESEND_API_KEY")
-    email_from = os.getenv("EMAIL_FROM")
+    email_from = os.getenv("EMAIL_FROM", "CEASER <teamceaser@heyceaser.in>")
+    reply_to = os.getenv("EMAIL_REPLY_TO", "teamceaser@heyceaser.in")
 
     if not api_key:
         raise RuntimeError("RESEND_API_KEY is not configured")
@@ -48,6 +49,7 @@ def send_test_email(to_email: str):
         {
             "from": email_from,
             "to": [to_email],
+            "reply_to": reply_to,
             "subject": "🚀 Welcome to CEASER",
             "html": html_content,
             "text": "Thank you for joining the CEASER Launch List. Visit https://heyceaser.in to learn more.",
