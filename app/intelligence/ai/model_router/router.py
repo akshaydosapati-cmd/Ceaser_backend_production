@@ -14,6 +14,7 @@ class ModelRouter:
     def __init__(self, registry: ModelRegistry | None = None, provider_factories: dict[str, Callable[[], Any]] | None = None):
         self.registry = registry or ModelRegistry()
         self.provider_factories = provider_factories or self._default_provider_factories()
+        self._providers: dict[str, Any] = {}
         self._health: dict[str, dict[str, Any]] = {}
         self.events: list[ModelEvent] = []
         self._last_selected: list[str] = []
@@ -36,10 +37,18 @@ class ModelRouter:
     def candidates(self, *, max_count: int = 2, request: ModelRequest | None = None) -> list[tuple[str, Any]]:
         from app.intelligence.ai.model_router.request_builder import request_for_chat
         selected = self.selections(request or request_for_chat(), max_count=max_count)
-        return [(item.model.provider_id, self.provider_factories[item.model.provider_id]()) for item in selected if item.model.provider_id in self.provider_factories]
+        return [(item.model.provider_id, self._provider(item.model.provider_id)) for item in selected if item.model.provider_id in self.provider_factories]
 
     def model_candidates(self, request: ModelRequest, *, max_count: int) -> list[tuple[SelectedModel, Any]]:
-        return [(item, self.provider_factories[item.model.provider_id]()) for item in self.selections(request, max_count=max_count) if item.model.provider_id in self.provider_factories]
+        return [(item, self._provider(item.model.provider_id)) for item in self.selections(request, max_count=max_count) if item.model.provider_id in self.provider_factories]
+
+    def _provider(self, provider_id: str) -> Any:
+        """Reuse provider adapters so their clients and health state stay warm."""
+        provider = self._providers.get(provider_id)
+        if provider is None:
+            provider = self.provider_factories[provider_id]()
+            self._providers[provider_id] = provider
+        return provider
 
     async def generate(self, request: ModelRequest, *, instructions: str, input_text: str, max_output_tokens: int | None = None) -> ModelResponse:
         attempts = self.model_candidates(request, max_count=max(1, settings.llm_max_fallbacks + 1))

@@ -211,7 +211,7 @@ def test_orchestrator_extracts_generic_research_topics() -> None:
 
 
 def test_live_research_runs_only_without_internal_context() -> None:
-    assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.GENERAL, has_internal_context=False) is True
+    assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.RESEARCH, has_internal_context=False) is True
     assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.GENERAL, has_internal_context=True) is False
     assert CeaserOrchestrator._should_run_live_research(route=KnowledgeRoute.FOLLOW_UP, has_internal_context=False) is False
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import asyncio
-import threading
 from dataclasses import asdict, replace
 from time import perf_counter
 from typing import Any
@@ -557,17 +556,29 @@ class CeaserOrchestrator:
 
         routing_finished = perf_counter()
         retrieval_started = perf_counter()
-        # CEASER's own user-scoped knowledge is always considered before the
-        # public web for general chat. A matching file, project, memory, or
-        # prior CEASER resource is stronger evidence than a generic search hit.
-        if route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.RESEARCH}:
+        if workflow:
+            request_mode = "AGENTIC_WORKFLOW"
+        elif route_decision.route in {KnowledgeRoute.INTEGRATION, KnowledgeRoute.CALENDAR, KnowledgeRoute.DESKTOP}:
+            request_mode = "PLUGIN_ACTION"
+        elif route_decision.route is KnowledgeRoute.RESEARCH:
+            request_mode = "FRESH_WEB_CHAT"
+        elif route_decision.route in {KnowledgeRoute.MEMORY, KnowledgeRoute.FILE, KnowledgeRoute.FOLLOW_UP}:
+            request_mode = "CONTEXTUAL_CHAT"
+        else:
+            request_mode = "DIRECT_CHAT"
+
+        # Deep user-scoped retrieval is reserved for requests that explicitly
+        # need files or remembered personal context. Stable explanations and
+        # writing/coding questions take the direct provider path.
+        if route_decision.route in {KnowledgeRoute.MEMORY, KnowledgeRoute.FILE}:
             memory_first_context = self._knowledge_context(
                 user_id=user_id,
                 message=effective_message,
                 conversation_id=conversation.id if conversation else conversation_id,
                 file_ids=file_ids or [],
             )
-            memory_first_results = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
+        if route_decision.route is KnowledgeRoute.MEMORY:
+            memory_first_results = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message, limit=8)
         has_internal_context = self._has_relevant_internal_context(
             message=effective_message,
             knowledge_context=memory_first_context,
@@ -596,17 +607,28 @@ class CeaserOrchestrator:
         tool_calls_finished = perf_counter()
 
         lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
-        lightweight_normal = route_decision.route in {KnowledgeRoute.GENERAL, KnowledgeRoute.DESKTOP} and not self._requires_rich_context(message) and memory_first_context is None
+        lightweight_normal = request_mode in {"DIRECT_CHAT", "FRESH_WEB_CHAT"}
         knowledge_context = memory_first_context or (self._lightweight_follow_up_context(follow_up_trace) if lightweight_follow_up else self._minimal_chat_context() if lightweight_normal else self._knowledge_context(
             user_id=user_id,
             message=effective_message,
             conversation_id=conversation.id if conversation else conversation_id,
             file_ids=file_ids or [],
         ))
-        skip_memory_retrieval = lightweight_follow_up or lightweight_normal or is_file_summary_request or knowledge_context.get("retrieval_scope") in {"none", "conversation_only", "web", "integrations"}
+        dataset_started = perf_counter()
+        dataset_result = None
+        if settings.huggingface_datasets_enabled and self._should_use_dataset(message, route_decision.route):
+            dataset_result = HuggingFaceDatasetService().search(effective_message)
+            if dataset_result["evidence"]:
+                existing = str(knowledge_context.get("evidence") or "")
+                knowledge_context["evidence"] = "\n\n".join(part for part in (existing, dataset_result["evidence"]) if part)
+                knowledge_context["retrieval_sources"] = list(dict.fromkeys([*(knowledge_context.get("retrieval_sources") or []), "huggingface_dataset"]))
+        dataset_finished = perf_counter()
+        skip_memory_retrieval = route_decision.route is not KnowledgeRoute.MEMORY
         memories = memory_first_results if memory_first_context is not None else [] if skip_memory_retrieval else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         retrieval_finished = perf_counter()
-        captured_memories = self.memory_capture.capture(user_id=user_id, message=message)
+        # Memory capture is post-response work. It must never delay provider
+        # invocation or the first visible token.
+        captured_memories: list[dict] = []
         observability = {
             "prepare_ms": round((perf_counter() - started) * 1000, 2),
             "routing_ms": round((routing_finished - routing_started) * 1000, 2),
@@ -623,6 +645,12 @@ class CeaserOrchestrator:
             "knowledge_route_reason": route_decision.reason,
             "retrieval_sources": knowledge_context.get("retrieval_sources", []),
             "dataset_rows": len(dataset_result["rows"]) if dataset_result else 0,
+            "dataset_ms": round((dataset_finished - dataset_started) * 1000, 2),
+            "request_mode": request_mode,
+            "memory_used": bool(memories),
+            "rag_used": bool(memory_first_context),
+            "web_used": bool(research_result),
+            "dataset_used": bool(dataset_result and dataset_result.get("rows")),
             "file_lookup_ms": request_trace.get("file_lookup_ms") or knowledge_context.get("file_lookup_ms"),
             "permission_check_ms": request_trace.get("permission_check_ms"),
             "document_metadata_load_ms": knowledge_context.get("document_metadata_load_ms"),
@@ -908,22 +936,8 @@ class CeaserOrchestrator:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
-
-        result: dict[str, Any] = {}
-        error: list[Exception] = []
-
-        def runner() -> None:
-            try:
-                result["value"] = asyncio.run(coro)
-            except Exception as exc:  # noqa: BLE001
-                error.append(exc)
-
-        thread = threading.Thread(target=runner, daemon=True)
-        thread.start()
-        thread.join()
-        if error:
-            raise error[0]
-        return result.get("value")
+        coro.close()
+        raise RuntimeError("Knowledge retrieval must run outside the active event loop.")
 
     def _direct_response(
         self,
@@ -1999,7 +2013,7 @@ class CeaserOrchestrator:
         # Read full history for inexpensive topic resolution, but keep the LLM
         # payload compact. Sending every stored report/answer adds latency and
         # can make a focused follow-up drift back to an older request.
-        messages = self.conversations.list_recent_messages(conversation_id=conversation.id, limit=24)
+        messages = self.conversations.list_recent_messages(conversation_id=conversation.id, limit=12)
         recent_messages = messages[-12:]
         generation_messages = messages[-6:]
         older_messages = messages[:-6]
@@ -2293,6 +2307,19 @@ class CeaserOrchestrator:
         if has_internal_context:
             return False
         return route is KnowledgeRoute.RESEARCH
+
+    @staticmethod
+    def _should_use_dataset(message: str, route: KnowledgeRoute) -> bool:
+        """Dataset evidence is opt-in, never generic chat overhead."""
+        if route not in {KnowledgeRoute.GENERAL, KnowledgeRoute.RESEARCH, KnowledgeRoute.FILE}:
+            return False
+        return bool(
+            re.search(
+                r"\b(?:dataset|training data|benchmark data|hugging\s*face dataset|data corpus)\b",
+                message,
+                re.IGNORECASE,
+            )
+        )
 
     @staticmethod
     def _has_relevant_internal_context(

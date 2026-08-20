@@ -145,14 +145,14 @@ def test_page_extractor_uses_safe_open_graph_image_only() -> None:
     assert extractor._image_url(html, "https://example.com/article") == "https://example.com/images/preview.jpg"
 
 
-def test_open_factual_question_uses_live_research() -> None:
+def test_stable_factual_question_uses_direct_chat() -> None:
     decision = KnowledgeRouter().classify(
         message="What are the war machines India has?",
         has_attached_files=False,
         is_follow_up=False,
     )
 
-    assert decision.route is KnowledgeRoute.RESEARCH
+    assert decision.route is KnowledgeRoute.GENERAL
 
 
 def test_serper_search_returns_ranked_results_and_images(monkeypatch) -> None:

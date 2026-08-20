@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from typing import Annotated
@@ -263,7 +264,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             trace["agent_started_ms"] = round((perf_counter() - started) * 1000, 2)
             logger.info("ceaser_latency request_id=%s agent_started_ms=%s", request_id, trace["agent_started_ms"])
             logger.info("ceaser_stream_stage request_id=%s stage=retrieval_started", request_id)
-            prepared = orchestrator.prepare_stream_request(
+            prepared = await asyncio.to_thread(
+                orchestrator.prepare_stream_request,
                 user_id=user_id,
                 message=message,
                 conversation_id=conversation_id,
@@ -351,14 +353,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             ):
                 chunks.append(chunk)
                 response_so_far = "".join(chunks)
-                if assistant_message is None:
-                    assistant_message = orchestrator.begin_stream_response(prepared)
-                # Persist the first visible text and regular checkpoints. This
-                # makes a refresh recover the response instead of only its prompt.
-                if assistant_message and (persisted_length == 0 or len(response_so_far) - persisted_length >= 360):
-                    orchestrator.persist_stream_response(assistant_message, response_so_far)
-                    persisted_length = len(response_so_far)
                 if not first_sse_token_logged:
+                    token_received_at = perf_counter()
                     trace["endpoint_ttft_ms"] = round((perf_counter() - started) * 1000, 2)
                     logger.info("ceaser_latency request_id=%s first_token_ms=%s", request_id, trace["endpoint_ttft_ms"])
                     logger.info(
@@ -367,6 +363,18 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                         trace["endpoint_ttft_ms"],
                     )
                     first_sse_token_logged = True
+                    yield event("token", chunk)
+                    trace["first_token_forwarding_ms"] = round((perf_counter() - token_received_at) * 1000, 2)
+                    # Durability begins only after the first chunk has been
+                    # forwarded. A database commit must never delay user TTFT.
+                    assistant_message = orchestrator.begin_stream_response(prepared)
+                    if assistant_message:
+                        orchestrator.persist_stream_response(assistant_message, response_so_far)
+                        persisted_length = len(response_so_far)
+                    continue
+                if assistant_message and len(response_so_far) - persisted_length >= 360:
+                    orchestrator.persist_stream_response(assistant_message, response_so_far)
+                    persisted_length = len(response_so_far)
                 yield event("token", chunk)
             response_text = "".join(chunks).strip()
             trace["output_tokens"] = max(1, round(len(response_text) / 4)) if response_text else 0
