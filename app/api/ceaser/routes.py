@@ -242,6 +242,10 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
         reservation = credits.reserve(user.id, billing_id, "ai_conversation")
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=402, detail="Insufficient CEASER credits.") from exc
+    # Keep only immutable primitives across the async SSE lifetime. The ORM
+    # reservation is committed/refreshed here and must not be dereferenced
+    # after the request session has expired or been detached.
+    reservation_estimated_credits = int(reservation.estimated_credits)
     # A new chat is created authoritatively inside the stream request. This
     # removes the frontend's blocking create-conversation round trip while
     # preserving one durable conversation and the existing ownership checks.
@@ -447,11 +451,17 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             yield event("response.failed", {"id": request_id, "status": "failed", "error": {"category": "internal", "message": "We couldn't complete your request. Please try again.", "retryable": True}})
             yield event("error", {"message": "We couldn't complete your request. Please try again."})
         finally:
-            if completed_meaningfully:
-                credits.settle(user_id, billing_id, reservation.estimated_credits, meaningful_output=True)
-            else:
+            try:
+                if completed_meaningfully:
+                    credits.settle(user_id, billing_id, reservation_estimated_credits, meaningful_output=True)
+                else:
+                    db.rollback()
+                    credits.release(user_id, billing_id)
+            except Exception:
+                # Tokens may already be visible. Keep the user response intact
+                # while recording the accounting failure for repair/audit.
                 db.rollback()
-                credits.release(user_id, billing_id)
+                logger.exception("ceaser_stream_settlement_failed user_id=%s billing_id=%s", user_id, billing_id)
 
     # Keep SSE events flowing through hosting proxies as they are produced.
     # Without no-transform / X-Accel-Buffering, a proxy can hold small token
