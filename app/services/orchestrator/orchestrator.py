@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import asyncio
+import logging
 from dataclasses import asdict, replace
 from time import perf_counter
 from typing import Any
@@ -46,6 +47,9 @@ from app.intelligence.orchestrator.intent_engine import intent_engine
 from app.intelligence.orchestrator.models import IntentType
 from app.intelligence.orchestrator.models import RequestContext
 from app.intelligence.orchestrator.retrieval_planner import retrieval_planner
+
+
+logger = logging.getLogger(__name__)
 
 
 class CeaserOrchestrator:
@@ -130,6 +134,9 @@ class CeaserOrchestrator:
             )
             if conversation.title == "New Chat":
                 self.conversations.rename(conversation, self.conversations.generate_title(message))
+            mark_stage("user_message_persistence")
+        else:
+            mark_stage("user_message_persistence_skipped")
 
         social_response = self._maybe_social_publish(user_id=user_id,message=message,device_id=device_id,media=desktop_file_context)
         if social_response:
@@ -417,7 +424,18 @@ class CeaserOrchestrator:
     ) -> dict[str, Any]:
         started = perf_counter()
         request_trace: dict[str, Any] = {}
+        stage_started = perf_counter()
+
+        def mark_stage(stage: str) -> None:
+            nonlocal stage_started
+            duration_ms = round((perf_counter() - stage_started) * 1000, 2)
+            request_trace.setdefault("stage_timings", []).append({"stage": stage, "duration_ms": duration_ms})
+            logger.info("ceaser_prepare_stage request_id=%s stage=%s duration_ms=%s", request_id, stage, duration_ms)
+            stage_started = perf_counter()
+
+        logger.info("ceaser_prepare_stage request_id=%s stage=preparation_started duration_ms=0", request_id)
         attached_documents = self._attached_documents(user_id=user_id, file_ids=file_ids or [], trace=request_trace)
+        mark_stage("attached_documents")
         effective_message = message
         if attached_documents:
             names = ", ".join(document["name"] for document in attached_documents)
@@ -432,7 +450,9 @@ class CeaserOrchestrator:
             )
 
         conversation = self._get_conversation(conversation_id)
+        mark_stage("conversation_lookup")
         conversation_context = self._conversation_context(conversation)
+        mark_stage("history_load")
         follow_up_trace = self._follow_up_trace(
             message=message,
             conversation_context=conversation_context,
@@ -444,6 +464,7 @@ class CeaserOrchestrator:
             has_attached_files=bool(attached_documents),
             is_follow_up=bool(follow_up_trace.get("follow_up_detected")),
         )
+        mark_stage("knowledge_classification")
 
         if conversation:
             self.conversations.create_message(
@@ -553,6 +574,7 @@ class CeaserOrchestrator:
                 research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names)
         else:
             selected_agent_names = self._default_stream_agents(message)
+        mark_stage("agent_or_workflow_selection")
 
         routing_finished = perf_counter()
         retrieval_started = perf_counter()
@@ -577,8 +599,10 @@ class CeaserOrchestrator:
                 conversation_id=conversation.id if conversation else conversation_id,
                 file_ids=file_ids or [],
             )
+        mark_stage("context_mode_and_rag_decision")
         if route_decision.route is KnowledgeRoute.MEMORY:
             memory_first_results = self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message, limit=8)
+        mark_stage("memory_decision")
         has_internal_context = self._has_relevant_internal_context(
             message=effective_message,
             knowledge_context=memory_first_context,
@@ -605,6 +629,7 @@ class CeaserOrchestrator:
                 selected_agent_names=selected_agent_names,
             )
         tool_calls_finished = perf_counter()
+        mark_stage("web_and_tool_decision")
 
         lightweight_follow_up = route_decision.route is KnowledgeRoute.FOLLOW_UP
         lightweight_normal = request_mode in {"DIRECT_CHAT", "FRESH_WEB_CHAT"}
@@ -623,9 +648,11 @@ class CeaserOrchestrator:
                 knowledge_context["evidence"] = "\n\n".join(part for part in (existing, dataset_result["evidence"]) if part)
                 knowledge_context["retrieval_sources"] = list(dict.fromkeys([*(knowledge_context.get("retrieval_sources") or []), "huggingface_dataset"]))
         dataset_finished = perf_counter()
+        mark_stage("dataset_decision")
         skip_memory_retrieval = route_decision.route is not KnowledgeRoute.MEMORY
         memories = memory_first_results if memory_first_context is not None else [] if skip_memory_retrieval else self.memory_retriever.retrieve_relevant_memories(user_id=user_id, query=effective_message)
         retrieval_finished = perf_counter()
+        mark_stage("prompt_context_assembly")
         # Memory capture is post-response work. It must never delay provider
         # invocation or the first visible token.
         captured_memories: list[dict] = []
@@ -662,6 +689,7 @@ class CeaserOrchestrator:
             "prompt_tokens": knowledge_context.get("prompt_tokens"),
             "selected_chunks": knowledge_context.get("selected_chunks"),
             "cache_hit": knowledge_context.get("cache_hit"),
+            "stage_timings": request_trace.get("stage_timings", []),
         }
         return {
             "mode": "generate",
