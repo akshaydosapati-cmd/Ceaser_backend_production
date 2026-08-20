@@ -11,6 +11,8 @@ from app.services.llm.provider import LLMProvider
 
 
 class ResponsePipeline:
+    MAX_CODE_CONTINUATIONS = 2
+
     def __init__(self, provider: LLMProvider | None = None):
         self.provider = provider
 
@@ -39,24 +41,50 @@ class ResponsePipeline:
         async for chunk in stream_text(instructions=instructions, input_text=context_text, max_output_tokens=output_budget, trace=trace, model_request=model_request):
             emitted.append(chunk)
             yield chunk
-        if trace is not None and trace.get("finish_reason") == "length" and emitted:
-            continuation_trace: dict[str, Any] = {}
-            partial = "".join(emitted)
-            continuation_input = (
-                f"Original request:\n{message}\n\nOutput so far:\n{partial}\n\n"
-                "Continue exactly where the output stopped. Do not restart or repeat prior content. "
-                "Finish all open code blocks and complete the requested answer."
-            )
-            async for chunk in stream_text(
-                instructions=instructions,
-                input_text=continuation_input,
-                max_output_tokens=min(output_budget, 3000),
-                trace=continuation_trace,
-                model_request=model_request,
+        if trace is not None and emitted and self._is_code_request(message, context):
+            continuation_count = 0
+            while (
+                trace.get("finish_reason") in {"length", "max_tokens", "token_limit"}
+                and continuation_count < self.MAX_CODE_CONTINUATIONS
             ):
-                yield chunk
-            trace["continuation_used"] = True
-            trace["continuation_finish_reason"] = continuation_trace.get("finish_reason")
+                continuation_count += 1
+                continuation_trace: dict[str, Any] = {}
+                partial = "".join(emitted)
+                tail = partial[-12000:]
+                continuation_input = (
+                    f"Original request:\n{message}\n\nTail of output so far:\n{tail}\n\n"
+                    "Continue exactly where the output stopped. Do not restart or repeat prior content. "
+                    "Preserve the same file and code block. Finish all open code blocks and complete the requested implementation."
+                )
+                segment: list[str] = []
+                async for chunk in stream_text(
+                    instructions=instructions,
+                    input_text=continuation_input,
+                    max_output_tokens=min(output_budget, 3000),
+                    trace=continuation_trace,
+                    model_request=model_request,
+                ):
+                    segment.append(chunk)
+                    emitted.append(chunk)
+                    yield chunk
+                trace["finish_reason"] = continuation_trace.get("finish_reason")
+                trace["continuation_used"] = True
+                trace["continuation_count"] = continuation_count
+                trace["continuation_finish_reason"] = continuation_trace.get("finish_reason")
+                if not segment:
+                    break
+
+    @staticmethod
+    def _is_code_request(message: str, context: dict) -> bool:
+        selected = (context.get("merged_contributions", {}) or {}).get("selected_agents", []) if isinstance(context, dict) else []
+        if any(str(agent).lower() == "bolt" for agent in selected):
+            return True
+        normalized = message.lower()
+        return any(term in normalized for term in (
+            "write code", "create code", "generate code", "build a website", "landing page",
+            "html", "css", "javascript", "python", "typescript", "react", "component",
+            "function", "api endpoint", "script", "responsive page",
+        ))
 
     @staticmethod
     def _model_request(*, message: str, context: dict, streaming: bool, context_text: str):

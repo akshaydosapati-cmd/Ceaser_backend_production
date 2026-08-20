@@ -117,6 +117,10 @@ class HuggingFaceProvider(LLMProvider):
                             chunk = json.loads(data)
                         except json.JSONDecodeError:
                             continue
+                        if trace is not None:
+                            reason = ((chunk.get("choices") or [{}])[0]).get("finish_reason")
+                            if reason:
+                                trace["finish_reason"] = str(reason)
                         delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
                         if isinstance(delta, str) and delta:
                             yield delta
