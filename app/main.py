@@ -38,7 +38,7 @@ from app.api.voice.routes import router as voice_router
 from app.api.waitlist.routes import router as waitlist_router
 from app.api.workflows.routes import router as workflows_router
 from app.core.config.settings import settings
-from app.core.database.session import SessionLocal
+from app.core.database.session import SessionLocal, begin_database_timing, database_timing, end_database_timing
 from app.intelligence.ai.errors import AIServiceUnavailableError
 from app.services.automations.automation_worker import automation_worker
 
@@ -88,19 +88,29 @@ def create_app() -> FastAPI:
         request_id = request.headers.get("x-request-id") or uuid4().hex
         request.state.request_id = request_id
         started = perf_counter()
-        response = await call_next(request)
-        elapsed_ms = round((perf_counter() - started) * 1000)
-        response.headers["X-Request-Id"] = request_id
-        response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
-        logger.info(
-            "request_complete method=%s path=%s status=%s request_id=%s elapsed_ms=%s",
-            request.method,
-            request.url.path,
-            response.status_code,
-            request_id,
-            elapsed_ms,
-        )
-        return response
+        timing_tokens = begin_database_timing()
+        try:
+            response = await call_next(request)
+            elapsed_ms = round((perf_counter() - started) * 1000)
+            query_count, database_ms = database_timing()
+            response.headers["X-Request-Id"] = request_id
+            response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
+            response.headers["X-Database-Time-Ms"] = str(database_ms)
+            response.headers["X-Database-Query-Count"] = str(query_count)
+            response.headers["Server-Timing"] = f"app;dur={elapsed_ms}, db;dur={database_ms}"
+            logger.info(
+                "request_complete method=%s path=%s status=%s request_id=%s elapsed_ms=%s db_ms=%s db_queries=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                request_id,
+                elapsed_ms,
+                database_ms,
+                query_count,
+            )
+            return response
+        finally:
+            end_database_timing(timing_tokens)
 
     # Keep CORS outside application middleware so normalized error responses
     # retain their origin headers as well as successful responses.
@@ -119,6 +129,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        max_age=600,
     )
 
     @app.exception_handler(AIServiceUnavailableError)
