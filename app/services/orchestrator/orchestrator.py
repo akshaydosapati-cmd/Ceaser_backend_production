@@ -1041,17 +1041,40 @@ class CeaserOrchestrator:
         parent_message_id: str | None = None,
         active_topic: str | None = None,
     ) -> list:
-        generated = self.suggestion_engine.generate(
-            user_query=user_query,
-            response_text=response_text,
-            intent=intent,
-            retrieval_scope=retrieval_scope,
-            output_format=output_format,
-            intent_domain=intent_domain,
-            intent_subdomain=intent_subdomain,
-            conversation_context=conversation_context,
-            recent_suggestions=self._recent_suggestions(conversation),
-        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            generated = self.suggestion_engine.generate(
+                user_query=user_query,
+                response_text=response_text,
+                intent=intent,
+                retrieval_scope=retrieval_scope,
+                output_format=output_format,
+                intent_domain=intent_domain,
+                intent_subdomain=intent_subdomain,
+                conversation_context=conversation_context,
+                recent_suggestions=self._recent_suggestions(conversation),
+            )
+        else:
+            # Streaming finalization runs inside the event loop. The legacy
+            # sync suggestion LLM would create an unawaited coroutine there;
+            # use the deterministic, zero-network fallback on this path.
+            category = self.suggestion_engine._detect_category(
+                user_query=user_query,
+                response_text=response_text,
+                intent=intent,
+                retrieval_scope=retrieval_scope,
+                output_format=output_format,
+                intent_domain=intent_domain,
+                intent_subdomain=intent_subdomain,
+            )
+            generated = self.suggestion_engine._intent_fallback(
+                category=category,
+                user_query=user_query,
+                response_text=response_text,
+                recent_suggestions=self._recent_suggestions(conversation),
+                max_items=5,
+            )
         return self._bind_suggestions(
             suggestions=generated,
             conversation_id=conversation.id if conversation else None,

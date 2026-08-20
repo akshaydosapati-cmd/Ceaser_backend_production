@@ -19,6 +19,7 @@ from app.models.user import User
 from app.schemas.ceaser import CeaserChatRequest, CeaserChatResponse
 from app.services.audit_service import AuditService
 from app.services.background_task_service import background_task_store
+from app.services.conversation_service import ConversationService
 from app.services.orchestrator import CeaserOrchestrator
 from app.services.rich_response_service import RichResponseService
 from app.services.credit_service import CreditService, InsufficientCreditsError
@@ -241,6 +242,11 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
         reservation = credits.reserve(user.id, billing_id, "ai_conversation")
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=402, detail="Insufficient CEASER credits.") from exc
+    # A new chat is created authoritatively inside the stream request. This
+    # removes the frontend's blocking create-conversation round trip while
+    # preserving one durable conversation and the existing ownership checks.
+    if not conversation_id:
+        conversation_id = ConversationService(db).create(user_id=user.id).id
     request_received = perf_counter()
     logger.info("ceaser_latency request_id=%s request_received_ms=0 conversation_id=%s", request_id, conversation_id)
     logger.info("ceaser_stream_stage request_id=%s stage=authentication_complete user_id=%s", request_id, user_id)
