@@ -1,6 +1,7 @@
 from typing import Annotated
 from time import monotonic
 from threading import Lock
+import logging
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,17 +13,13 @@ from app.core.security.supabase_auth import supabase_auth
 from app.models.user import User
 from app.models.desktop import DesktopDevice
 from app.repositories.user_repository import UserRepository
-from app.services.agent_service import AgentService
 from app.services.desktop_auth_service import verify_desktop_access_token
 
 
 _AUTH_CACHE_TTL_SECONDS = 300.0
 _AUTH_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 _AUTH_CACHE_LOCK = Lock()
-
-
-def ensure_dev_user_agents(db: Session, user_id: str) -> None:
-    AgentService(db).ensure_default_agents(user_id)
+logger = logging.getLogger(__name__)
 
 
 def _cached_supabase_user(access_token: str) -> dict[str, str] | None:
@@ -47,13 +44,15 @@ async def get_current_user(
     db: Annotated[Session, Depends(get_db)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
+    auth_started = monotonic()
+    logger.info("ceaser_auth_stage stage=auth_started")
     if settings.dev_auth_bypass:
         repo = UserRepository(db)
         try:
             user = repo.get_or_create(email="dev@ceaser.local", user_id="00000000-0000-4000-8000-000000000001")
             db.commit()
             db.refresh(user)
-            ensure_dev_user_agents(db, user.id)
+            logger.info("ceaser_auth_stage stage=auth_complete mode=dev duration_ms=%.2f", (monotonic() - auth_started) * 1000)
             return user
         except (SQLAlchemyError, Exception) as exc:
             db.rollback()
@@ -73,16 +72,17 @@ async def get_current_user(
             device = db.query(DesktopDevice).filter(DesktopDevice.user_id == user.id, DesktopDevice.device_id == device_id).first()
             if device and device.revoked_at:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop device revoked")
-        try:
-            ensure_dev_user_agents(db, user.id)
-            return user
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="CEASER account setup is temporarily unavailable.") from exc
+        logger.info("ceaser_auth_stage stage=auth_complete mode=desktop duration_ms=%.2f", (monotonic() - auth_started) * 1000)
+        return user
     try:
         supabase_user = _cached_supabase_user(token)
         if supabase_user is None:
+            remote_started = monotonic()
             supabase_user = await supabase_auth.get_user(token)
             _store_cached_supabase_user(token, {"email": supabase_user.get("email") or "", "id": supabase_user.get("id") or ""})
+            logger.info("ceaser_auth_stage stage=supabase_remote duration_ms=%.2f", (monotonic() - remote_started) * 1000)
+        else:
+            logger.info("ceaser_auth_stage stage=supabase_cache_hit")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session") from exc
 
@@ -96,7 +96,7 @@ async def get_current_user(
         user = repo.get_or_create(email=email, user_id=user_id)
         db.commit()
         db.refresh(user)
-        AgentService(db).ensure_default_agents(user.id)
+        logger.info("ceaser_auth_stage stage=auth_complete mode=supabase duration_ms=%.2f", (monotonic() - auth_started) * 1000)
         return user
     except (SQLAlchemyError, Exception) as exc:
         db.rollback()

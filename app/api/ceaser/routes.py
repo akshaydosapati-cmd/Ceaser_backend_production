@@ -231,6 +231,7 @@ def _run_chat_background_task(task_id: str, user_id: str, payload: CeaserChatReq
 
 @router.post("/chat/stream")
 async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]):
+    route_entered = perf_counter()
     user_id = user.id
     message = payload.message
     conversation_id = payload.conversation_id
@@ -239,7 +240,9 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
     billing_id = f"chat:{payload.request_id or request_id}"
     credits = CreditService(db)
     try:
+        reserve_started = perf_counter()
         reservation = credits.reserve(user.id, billing_id, "ai_conversation")
+        logger.info("ceaser_stream_stage request_id=%s stage=credits_reserved duration_ms=%.2f", request_id, (perf_counter() - reserve_started) * 1000)
     except InsufficientCreditsError as exc:
         raise HTTPException(status_code=402, detail="Insufficient CEASER credits.") from exc
     # Keep only immutable primitives across the async SSE lifetime. The ORM
@@ -250,9 +253,11 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
     # removes the frontend's blocking create-conversation round trip while
     # preserving one durable conversation and the existing ownership checks.
     if not conversation_id:
+        conversation_started = perf_counter()
         conversation_id = ConversationService(db).create(user_id=user.id).id
-    request_received = perf_counter()
-    logger.info("ceaser_latency request_id=%s request_received_ms=0 conversation_id=%s", request_id, conversation_id)
+        logger.info("ceaser_stream_stage request_id=%s stage=conversation_created duration_ms=%.2f", request_id, (perf_counter() - conversation_started) * 1000)
+    request_received = route_entered
+    logger.info("ceaser_latency request_id=%s route_entry_ms=0 conversation_id=%s", request_id, conversation_id)
     logger.info("ceaser_stream_stage request_id=%s stage=authentication_complete user_id=%s", request_id, user_id)
 
     def event(event_type: str, data: dict | str) -> str:

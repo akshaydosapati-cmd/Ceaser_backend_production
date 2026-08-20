@@ -134,9 +134,6 @@ class CeaserOrchestrator:
             )
             if conversation.title == "New Chat":
                 self.conversations.rename(conversation, self.conversations.generate_title(message))
-            mark_stage("user_message_persistence")
-        else:
-            mark_stage("user_message_persistence_skipped")
 
         social_response = self._maybe_social_publish(user_id=user_id,message=message,device_id=device_id,media=desktop_file_context)
         if social_response:
@@ -562,23 +559,8 @@ class CeaserOrchestrator:
         memory_first_context: dict[str, Any] | None = None
         memory_first_results: list[dict] = []
         routing_started = perf_counter()
-        if self._is_explicit_workflow_creation_request(message):
-            workflow = self.workflow_orchestrator.run(
-                user_id=user_id,
-                message=message,
-                conversation_id=conversation_id,
-                file_ids=file_ids or [],
-            )
-            selected_agent_names = workflow.selected_agents
-            if route_decision.route is KnowledgeRoute.RESEARCH and self._should_run_research(message, selected_agent_names):
-                research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names)
-        else:
-            selected_agent_names = self._default_stream_agents(message)
-        mark_stage("agent_or_workflow_selection")
-
-        routing_finished = perf_counter()
-        retrieval_started = perf_counter()
-        if workflow:
+        explicit_workflow = self._is_explicit_workflow_creation_request(message)
+        if explicit_workflow:
             request_mode = "AGENTIC_WORKFLOW"
         elif route_decision.route in {KnowledgeRoute.INTEGRATION, KnowledgeRoute.CALENDAR, KnowledgeRoute.DESKTOP}:
             request_mode = "PLUGIN_ACTION"
@@ -588,6 +570,26 @@ class CeaserOrchestrator:
             request_mode = "CONTEXTUAL_CHAT"
         else:
             request_mode = "DIRECT_CHAT"
+
+        # Ordinary chat does not need specialist-agent resolution. Keep this
+        # branch before agent selection so registry/workflow work cannot delay
+        # the provider hot path.
+        if explicit_workflow:
+            workflow = self.workflow_orchestrator.run(
+                user_id=user_id,
+                message=message,
+                conversation_id=conversation_id,
+                file_ids=file_ids or [],
+            )
+            selected_agent_names = workflow.selected_agents
+            if route_decision.route is KnowledgeRoute.RESEARCH and self._should_run_research(message, selected_agent_names):
+                research_result = self._maybe_research(query=self._research_query(message, conversation_context), selected_agent_names=selected_agent_names)
+        elif request_mode != "DIRECT_CHAT":
+            selected_agent_names = self._default_stream_agents(message)
+        mark_stage("agent_or_workflow_selection")
+
+        routing_finished = perf_counter()
+        retrieval_started = perf_counter()
 
         # Deep user-scoped retrieval is reserved for requests that explicitly
         # need files or remembered personal context. Stable explanations and
