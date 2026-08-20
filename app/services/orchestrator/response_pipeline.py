@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Any
 
 from app.intelligence.ai.sync import generate_text_sync, stream_text
-from app.intelligence.ai.model_router import request_for_agents, request_for_chat
+from app.intelligence.ai.model_router import request_for_agent, request_for_agents, request_for_chat
 from app.services.llm.provider import LLMProvider
 
 
@@ -95,6 +95,8 @@ class ResponsePipeline:
         if selected:
             return request_for_agents([str(item).lower() for item in selected], streaming=streaming, context_size_estimate=max(1, len(context_text) // 4), preferred_model_ids=preferred_model_ids or None)
         normalized = message.lower()
+        if ResponsePipeline._is_code_request(message, context):
+            return request_for_agent("bolt", streaming=streaming, context_size_estimate=max(1, len(context_text) // 4), preferred_model_ids=preferred_model_ids or None)
         task_type = "reasoning" if any(term in normalized for term in ("compare", "strategy", "analyze", "analyse", "trade-off", "why")) else "general"
         return request_for_chat(streaming=streaming, context_size_estimate=max(1, len(context_text) // 4), task_type=task_type, preferred_model_ids=preferred_model_ids or None)
 
