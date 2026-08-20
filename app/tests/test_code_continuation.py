@@ -71,3 +71,34 @@ def test_ordinary_chat_does_not_continue(monkeypatch):
 
     assert chunks == ["short answer"]
     assert "continuation_count" not in trace
+
+
+def test_incomplete_single_html_continues_after_provider_stop(monkeypatch):
+    calls = 0
+
+    async def fake_stream_text(*, trace=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            trace["finish_reason"] = "stop"
+            yield "<!DOCTYPE html><html><head></head><body><style>.hamburger"
+        else:
+            trace["finish_reason"] = "stop"
+            yield "{display:block}</style><script>console.log('ok')</script></body></html>```html"
+
+    monkeypatch.setattr(pipeline_module, "stream_text", fake_stream_text)
+    trace = {}
+
+    async def run():
+        return [chunk async for chunk in ResponsePipeline().stream(
+            "Create a complete responsive Dental Clinic landing page in a single index.html file using HTML, CSS and vanilla JavaScript.",
+            {"merged_contributions": {"selected_agents": ["Bolt"]}},
+            trace=trace,
+        )]
+
+    result = "".join(__import__("asyncio").run(run()))
+    assert "</html>" in result
+    assert "```html" not in result[result.find("hamburger"):]
+    assert trace["continuation_reason"] == "STRUCTURAL_INCOMPLETE"
+    assert trace["continuation_count"] == 1
+    assert trace["structural_complete"] is True

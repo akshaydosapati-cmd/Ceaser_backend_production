@@ -396,6 +396,15 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
             trace["total_time_ms"] = round((perf_counter() - started) * 1000, 2)
             prepared["stream_trace"] = trace
             response = orchestrator.finalize_stream_response(prepared, response_text, assistant_message=assistant_message)
+            if trace.get("structural_completion_blocked"):
+                response["status"] = "partial"
+                response["completion_warning"] = "The code artifact needs continuation before it is complete."
+                logger.warning(
+                    "ceaser_stream_stage request_id=%s stage=structural_completion_blocked artifact_type=%s continuation_count=%s",
+                    request_id,
+                    trace.get("artifact_type"),
+                    trace.get("continuation_count", 0),
+                )
             rich = RichResponseService.compose(response,user_id=user_id,task_id=request_id).model_dump(mode="json")
             response["rich_response"] = rich
             stage_marks["complete"] = perf_counter()

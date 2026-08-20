@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 import json
+import re
 from time import perf_counter
 from typing import Any
 
@@ -43,18 +44,32 @@ class ResponsePipeline:
             yield chunk
         if trace is not None and emitted and self._is_code_request(message, context):
             continuation_count = 0
+            artifact_type = self._artifact_type(message)
+            structural_complete = self._artifact_is_complete("".join(emitted), artifact_type)
+            length_limit_detected = trace.get("finish_reason") in {"length", "max_tokens", "token_limit"}
+            trace.update(
+                is_coding_request=True,
+                artifact_type=artifact_type,
+                structural_complete=structural_complete,
+                length_limit_detected=length_limit_detected,
+            )
             while (
-                trace.get("finish_reason") in {"length", "max_tokens", "token_limit"}
+                (length_limit_detected or not structural_complete)
                 and continuation_count < self.MAX_CODE_CONTINUATIONS
             ):
                 continuation_count += 1
                 continuation_trace: dict[str, Any] = {}
                 partial = "".join(emitted)
                 tail = partial[-12000:]
+                continuation_reason = "LENGTH_LIMIT" if length_limit_detected else "STRUCTURAL_INCOMPLETE"
                 continuation_input = (
+                    "You are continuing an existing code artifact.\n"
                     f"Original request:\n{message}\n\nTail of output so far:\n{tail}\n\n"
-                    "Continue exactly where the output stopped. Do not restart or repeat prior content. "
-                    "Preserve the same file and code block. Finish all open code blocks and complete the requested implementation."
+                    "Continue EXACTLY from where the supplied code ends. Do not restart the file. "
+                    "Do not repeat previous sections. Do not output an opening Markdown code fence or ```html. "
+                    "Output only the raw continuation code. Preserve the current language and structure. "
+                    "Complete all remaining requested functionality. For this single index.html request, "
+                    "continue until the document is actually complete and ends with </html>."
                 )
                 segment: list[str] = []
                 async for chunk in stream_text(
@@ -64,15 +79,30 @@ class ResponsePipeline:
                     trace=continuation_trace,
                     model_request=model_request,
                 ):
-                    segment.append(chunk)
-                    emitted.append(chunk)
-                    yield chunk
+                    normalized_chunk = self._normalize_continuation_chunk(chunk)
+                    if normalized_chunk:
+                        segment.append(normalized_chunk)
+                        emitted.append(normalized_chunk)
+                        yield normalized_chunk
                 trace["finish_reason"] = continuation_trace.get("finish_reason")
+                partial = "".join(emitted)
+                structural_complete = self._artifact_is_complete(partial, artifact_type)
+                length_limit_detected = trace.get("finish_reason") in {"length", "max_tokens", "token_limit"}
                 trace["continuation_used"] = True
                 trace["continuation_count"] = continuation_count
                 trace["continuation_finish_reason"] = continuation_trace.get("finish_reason")
+                trace["continuation_reason"] = continuation_reason
+                trace["structural_complete"] = structural_complete
+                trace["length_limit_detected"] = length_limit_detected
                 if not segment:
                     break
+            if artifact_type and not structural_complete:
+                trace["structural_completion_blocked"] = True
+                trace["continuation_allowed"] = False
+            elif artifact_type and "```" in "".join(emitted) and not re.search(r"```\s*$", "".join(emitted)):
+                closing_fence = "\n```"
+                emitted.append(closing_fence)
+                yield closing_fence
 
     @staticmethod
     def _is_code_request(message: str, context: dict) -> bool:
@@ -85,6 +115,29 @@ class ResponsePipeline:
             "html", "css", "javascript", "python", "typescript", "react", "component",
             "function", "api endpoint", "script", "responsive page",
         ))
+
+    @staticmethod
+    def _artifact_type(message: str) -> str | None:
+        normalized = message.lower()
+        if "index.html" in normalized and "single" in normalized and "complete" in normalized:
+            return "single_html"
+        return None
+
+    @staticmethod
+    def _artifact_is_complete(content: str, artifact_type: str | None) -> bool:
+        if artifact_type != "single_html":
+            return True
+        lowered = content.lower()
+        return all(marker in lowered for marker in (
+            "<!doctype html", "<html", "<head", "</head>", "<body", "</body>", "</html>", "<script",
+        ))
+
+    @staticmethod
+    def _normalize_continuation_chunk(chunk: str) -> str:
+        # Only strip wrappers at a continuation boundary. Inline backticks and
+        # code content remain untouched.
+        normalized = re.sub(r"^\s*```(?:html|javascript|js|css)?\s*", "", chunk, count=1, flags=re.I)
+        return re.sub(r"\s*```(?:html|javascript|js|css)?\s*$", "", normalized, count=1, flags=re.I)
 
     @staticmethod
     def _model_request(*, message: str, context: dict, streaming: bool, context_text: str):
