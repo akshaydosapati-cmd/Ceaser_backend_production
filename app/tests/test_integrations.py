@@ -80,12 +80,13 @@ def test_integration_provider_registry_and_dashboard_records() -> None:
 
 def test_connect_without_oauth_credentials_marks_provider_actionable() -> None:
     response = client.post("/integrations/google-calendar/connect", json={})
-    assert response.status_code == 404
-    assert response.json()["detail"] == "This integration is being prepared for verified access."
+    assert response.status_code == 200
+    assert response.json()["provider"] == "google-calendar"
+    assert response.json()["requires_credentials"] is True
 
     integrations = client.get("/integrations").json()
     calendar = next(item for item in integrations if item["id"] == "google-calendar")
-    assert calendar["status"] == "coming_soon"
+    assert calendar["status"] == "credentials_required"
     assert calendar["connected"] is False
 
 

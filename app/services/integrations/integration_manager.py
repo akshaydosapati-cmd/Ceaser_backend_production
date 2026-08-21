@@ -11,15 +11,6 @@ from app.services.integrations.provider_registry import ProviderRegistry
 from app.services.integrations.token_manager import TokenManager
 
 
-LAUNCH_DISABLED_PROVIDERS = {
-    "google-calendar",
-    "gmail",
-    "google-drive",
-    "google-tasks",
-    "google-classroom",
-}
-
-
 class IntegrationManager:
     def __init__(self, db: Session):
         self.db = db
@@ -42,8 +33,6 @@ class IntegrationManager:
 
     def start_connect(self, user_id: str, provider_id: str, workspace_id: str | None = None, return_url: str | None = None) -> dict:
         self.registry.get(provider_id)
-        if provider_id in LAUNCH_DISABLED_PROVIDERS:
-            raise ValueError("This integration is being prepared for verified access.")
         integration = self.connections.get_or_create(user_id=user_id, provider=provider_id, workspace_id=workspace_id)
         start = self.oauth.start(provider_id)
         integration.metadata_json = {
@@ -58,8 +47,6 @@ class IntegrationManager:
         return {**start.model_dump(), "integration": self._read(provider_id, integration)}
 
     def complete_connect(self, user_id: str, provider_id: str, code: str, workspace_id: str | None = None) -> Integration:
-        if provider_id in LAUNCH_DISABLED_PROVIDERS:
-            raise ValueError("This integration is being prepared for verified access.")
         integration = self.connections.get_or_create(user_id=user_id, provider=provider_id, workspace_id=workspace_id)
         payload = self.oauth.exchange_code(provider_id, code)
         self.tokens.apply(integration, payload)
@@ -70,8 +57,6 @@ class IntegrationManager:
 
     def complete_connect_by_state(self, provider_id: str, code: str, state: str) -> Integration:
         self.registry.get(provider_id)
-        if provider_id in LAUNCH_DISABLED_PROVIDERS:
-            raise ValueError("This integration is being prepared for verified access.")
         integration = self.connections.get_by_oauth_state(provider=provider_id, state=state)
         if not integration:
             raise ValueError("OAuth session expired. Start the connection again from CEASER.")
@@ -140,21 +125,6 @@ class IntegrationManager:
         provider = self.registry.get(provider_id)
         status = provider.get_status(integration)
         definition = provider.definition().model_dump()
-        if provider_id in LAUNCH_DISABLED_PROVIDERS:
-            definition = {
-                **definition,
-                "description": "Prepared for verified Google Workspace access after launch.",
-                "scopes": [],
-                "permissions": [],
-            }
-            status = {
-                "provider": provider_id,
-                "status": "coming_soon",
-                "connected": False,
-                "account_email": None,
-                "last_sync_at": None,
-                "permissions": [],
-            }
         return {
             **definition,
             **status,

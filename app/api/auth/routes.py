@@ -1,7 +1,7 @@
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -30,8 +30,21 @@ from app.schemas.desktop_cloud import DesktopAuthorizeRequest, DesktopAuthorizeR
 from app.schemas.user import UserRead
 from app.services.audit_service import AuditService
 from app.services.desktop_auth_service import DesktopAuthService
+from app.core.rate_limiter import rate_limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def enforce_auth_rate_limit(request: Request) -> None:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    identity = forwarded or (request.client.host if request.client else "unknown")
+    decision = rate_limiter.check("auth", identity, limit=10, window_seconds=60)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "rate_limited", "message": "Too many authentication requests.", "retry_after": decision.retry_after},
+            headers={"Retry-After": str(decision.retry_after)},
+        )
 
 
 @router.get("/desktop-callback", response_class=HTMLResponse, include_in_schema=False)
@@ -97,7 +110,8 @@ async def signup(payload: AuthCredentials, db: Annotated[Session, Depends(get_db
 
 
 @router.post("/login", response_model=AuthSession)
-async def login(payload: AuthCredentials, db: Annotated[Session, Depends(get_db)]) -> AuthSession:
+async def login(payload: AuthCredentials, request: Request, db: Annotated[Session, Depends(get_db)]) -> AuthSession:
+    enforce_auth_rate_limit(request)
     try:
         supabase_response = await supabase_auth.login(payload.email, payload.password)
     except Exception as exc:
@@ -126,7 +140,8 @@ def sign_out() -> dict[str, str]:
 
 
 @router.post("/refresh", response_model=AuthSession)
-async def refresh_session(payload: RefreshSessionRequest, db: Annotated[Session, Depends(get_db)]) -> AuthSession:
+async def refresh_session(payload: RefreshSessionRequest, request: Request, db: Annotated[Session, Depends(get_db)]) -> AuthSession:
+    enforce_auth_rate_limit(request)
     try:
         supabase_response = await supabase_auth.refresh_session(payload.refresh_token)
     except Exception as exc:

@@ -9,6 +9,7 @@ from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from app.core.rate_limiter import rate_limiter
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -238,24 +239,50 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
     file_ids = list(payload.file_ids)
     request_id = str(uuid.uuid4())
     billing_id = f"chat:{payload.request_id or request_id}"
+    request_limit = rate_limiter.check("chat", user_id, limit=10, window_seconds=60)
+    if not request_limit.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "rate_limited", "message": "You're sending requests pretty quickly. Try again in a few seconds.", "retry_after": request_limit.retry_after},
+            headers={"Retry-After": str(request_limit.retry_after)},
+        )
+    concurrency_limit = rate_limiter.acquire("chat-generation", user_id, limit=3)
+    if not concurrency_limit.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "rate_limited", "message": "You're sending requests pretty quickly. Try again in a few seconds.", "retry_after": concurrency_limit.retry_after},
+            headers={"Retry-After": str(concurrency_limit.retry_after)},
+        )
     credits = CreditService(db)
     try:
         reserve_started = perf_counter()
         reservation = credits.reserve(user.id, billing_id, "ai_conversation")
         logger.info("ceaser_stream_stage request_id=%s stage=credits_reserved duration_ms=%.2f", request_id, (perf_counter() - reserve_started) * 1000)
     except InsufficientCreditsError as exc:
+        rate_limiter.release("chat-generation", user_id)
         raise HTTPException(status_code=402, detail="Insufficient CEASER credits.") from exc
+    except Exception:
+        rate_limiter.release("chat-generation", user_id)
+        raise
     # Keep only immutable primitives across the async SSE lifetime. The ORM
     # reservation is committed/refreshed here and must not be dereferenced
     # after the request session has expired or been detached.
-    reservation_estimated_credits = int(reservation.estimated_credits)
-    # A new chat is created authoritatively inside the stream request. This
-    # removes the frontend's blocking create-conversation round trip while
-    # preserving one durable conversation and the existing ownership checks.
-    if not conversation_id:
-        conversation_started = perf_counter()
-        conversation_id = ConversationService(db).create(user_id=user.id).id
-        logger.info("ceaser_stream_stage request_id=%s stage=conversation_created duration_ms=%.2f", request_id, (perf_counter() - conversation_started) * 1000)
+    try:
+        reservation_estimated_credits = int(reservation.estimated_credits)
+        # A new chat is created authoritatively inside the stream request. This
+        # removes the frontend's blocking create-conversation round trip while
+        # preserving one durable conversation and the existing ownership checks.
+        if not conversation_id:
+            conversation_started = perf_counter()
+            conversation_id = ConversationService(db).create(user_id=user.id).id
+            logger.info("ceaser_stream_stage request_id=%s stage=conversation_created duration_ms=%.2f", request_id, (perf_counter() - conversation_started) * 1000)
+    except Exception:
+        db.rollback()
+        try:
+            credits.release(user_id, billing_id)
+        finally:
+            rate_limiter.release("chat-generation", user_id)
+        raise
     request_received = route_entered
     logger.info("ceaser_latency request_id=%s route_entry_ms=0 conversation_id=%s", request_id, conversation_id)
     logger.info("ceaser_stream_stage request_id=%s stage=authentication_complete user_id=%s", request_id, user_id)
@@ -476,6 +503,8 @@ async def ceaser_chat_stream(payload: CeaserChatRequest, user: Annotated[User, D
                 # while recording the accounting failure for repair/audit.
                 db.rollback()
                 logger.exception("ceaser_stream_settlement_failed user_id=%s billing_id=%s", user_id, billing_id)
+            finally:
+                rate_limiter.release("chat-generation", user_id)
 
     # Keep SSE events flowing through hosting proxies as they are produced.
     # Without no-transform / X-Accel-Buffering, a proxy can hold small token
