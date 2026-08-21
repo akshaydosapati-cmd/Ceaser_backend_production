@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
+from app.models.mixins import utc_now
 
 from app.models.conversation import Conversation, Message
 from app.intelligence.knowledge.repository import KnowledgeRepository
@@ -46,6 +47,16 @@ class ConversationService:
 
     def list_recent_messages(self, conversation_id: str, limit: int = 24) -> list[Message]:
         return self.conversations.list_recent_messages(conversation_id=conversation_id, limit=limit)
+
+    def update_state(self, conversation: Conversation, *, summary: str | None, state: dict) -> Conversation:
+        conversation.conversation_summary = summary
+        conversation.conversation_state = state
+        conversation.summary_version = max(1, int(conversation.summary_version or 1))
+        conversation.state_updated_at = utc_now()
+        self.db.add(conversation)
+        self.db.commit()
+        self.db.refresh(conversation)
+        return conversation
 
     def create_message(
         self,

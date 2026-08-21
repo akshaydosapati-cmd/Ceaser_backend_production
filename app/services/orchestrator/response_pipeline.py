@@ -237,7 +237,7 @@ class ResponsePipeline:
             return instructions, context_text
 
         specialist_plan = merged_contributions.get("specialist_plan") if isinstance(merged_contributions, dict) else None
-        if retrieval_scope == "none" and not documents and not memories and not evidence and not research and not specialist_plan:
+        if retrieval_scope == "none" and not conversation and conversation_summary == "None" and not documents and not memories and not evidence and not research and not specialist_plan:
             instructions = (
                 "You are CEASER. Answer the latest user request directly, accurately, and concisely. "
                 "If the user explicitly names a new subject, switch to it without discussing conversation management. "

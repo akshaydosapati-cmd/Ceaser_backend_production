@@ -307,8 +307,8 @@ class CeaserOrchestrator:
                 "latest_user_message": message,
                 "resolved_request_context": effective_message,
                 "memories": memories,
-                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else [] if lightweight_normal else conversation_context["messages"],
-                "conversation_summary": None if lightweight_normal else conversation_context.get("summary"),
+                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else conversation_context["messages"],
+                "conversation_summary": conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
                 "documents": attached_documents,
@@ -405,6 +405,13 @@ class CeaserOrchestrator:
             self.db.add(assistant_message)
             self.db.commit()
             self.db.refresh(assistant_message)
+            self._persist_conversation_state(
+                conversation=conversation,
+                message=message,
+                response=final_response,
+                follow_up_trace=follow_up_trace,
+                previous_state=conversation_context.get("persisted_state") or {},
+            )
         return response_payload
 
     def prepare_stream_request(
@@ -691,6 +698,12 @@ class CeaserOrchestrator:
             "prompt_tokens": knowledge_context.get("prompt_tokens"),
             "selected_chunks": knowledge_context.get("selected_chunks"),
             "cache_hit": knowledge_context.get("cache_hit"),
+            "recent_messages_count": len(conversation_context.get("messages") or []),
+            "conversation_summary_used": bool(conversation_context.get("summary")),
+            "active_topic_used": bool(follow_up_trace.get("active_topic")),
+            "continuation_detected": bool(follow_up_trace.get("follow_up_detected")),
+            "reference_resolution_source": follow_up_trace.get("context_source", []),
+            "global_memory_used": bool(memories),
             "stage_timings": request_trace.get("stage_timings", []),
         }
         return {
@@ -718,8 +731,8 @@ class CeaserOrchestrator:
                 "latest_user_message": message,
                 "resolved_request_context": effective_message,
                 "memories": memories,
-                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else [] if lightweight_normal else conversation_context["messages"],
-                "conversation_summary": None if lightweight_normal else conversation_context.get("summary"),
+                "conversation": self._follow_up_generation_context(conversation_context, follow_up_trace) if lightweight_follow_up else conversation_context["messages"],
+                "conversation_summary": conversation_context.get("summary"),
                 "previous_research": conversation_context["previous_research"],
                 "projects": [],
                 "documents": attached_documents,
@@ -896,6 +909,13 @@ class CeaserOrchestrator:
             self.db.add(assistant_message)
             self.db.commit()
             self.db.refresh(assistant_message)
+            self._persist_conversation_state(
+                conversation=conversation,
+                message=prepared["message"],
+                response=final_response,
+                follow_up_trace=follow_up_trace,
+                previous_state=prepared.get("conversation_context", {}).get("persisted_state") or {},
+            )
         return response_payload
 
     def _knowledge_context(self, *, user_id: str, message: str, conversation_id: str | None, file_ids: list[str] | None = None) -> dict:
@@ -2061,12 +2081,14 @@ class CeaserOrchestrator:
                 "last_user_intent": None,
                 "message_ids": [],
                 "named_entities": [],
+                "persisted_state": {},
             }
 
         # Read full history for inexpensive topic resolution, but keep the LLM
         # payload compact. Sending every stored report/answer adds latency and
         # can make a focused follow-up drift back to an older request.
         messages = self.conversations.list_recent_messages(conversation_id=conversation.id, limit=12)
+        persisted_state = conversation.conversation_state or {}
         recent_messages = messages[-12:]
         generation_messages = messages[-6:]
         older_messages = messages[:-6]
@@ -2111,16 +2133,16 @@ class CeaserOrchestrator:
             )
         topic_history_messages = [{"role": item.role, "content": item.content[:1600]} for item in messages]
         history_messages = [{"role": item.role, "content": item.content[:1600]} for item in generation_messages]
-        named_entities = self._extract_entities(compact_messages)
-        active_topic = self._active_topic_from_messages(topic_history_messages)
-        active_subtopic = self._active_subtopic_from_messages(topic_history_messages, active_topic)
+        named_entities = list(dict.fromkeys([*self._extract_entities(compact_messages), *(persisted_state.get("important_entities") or [])]))[:8]
+        active_topic = self._active_topic_from_messages(topic_history_messages) or persisted_state.get("active_topic")
+        active_subtopic = self._active_subtopic_from_messages(topic_history_messages, active_topic) or persisted_state.get("active_subtopic")
         return {
             # The response pipeline receives only recent turns plus the compact
             # summary above. Topic resolution still considers the full history.
             "messages": history_messages,
             "previous_research": previous_research,
             "inferred_topic": self._infer_topic(compact_messages),
-            "summary": self._summarize_messages(older_messages),
+            "summary": conversation.conversation_summary or self._summarize_messages(older_messages),
             "history_message_count": len(messages),
             "history_token_count": max(1, round(sum(len(item.get("content", "")) for item in history_messages) / 4)),
             "latest_user_message": latest_user_message,
@@ -2130,6 +2152,7 @@ class CeaserOrchestrator:
             "last_user_intent": self._last_user_intent_from_messages(history_messages, active_topic),
             "message_ids": [item.id for item in messages],
             "named_entities": named_entities,
+            "persisted_state": persisted_state,
         }
 
     @staticmethod
@@ -2595,7 +2618,12 @@ class CeaserOrchestrator:
         # Conversation continuity must not depend on a heuristic successfully
         # naming the topic. A prior assistant/user exchange is sufficient for
         # vague follow-ups such as "explain more" or "what about that".
-        prior_exchange_available = bool(latest_user_content or latest_assistant_content)
+        prior_exchange_available = bool(
+            latest_user_content
+            or latest_assistant_content
+            or conversation_context.get("summary")
+            or conversation_context.get("persisted_state")
+        )
         follow_up_detected = bool(resolution.get("follow_up_detected") and prior_exchange_available)
         resolved_entities = list(conversation_context.get("named_entities") or [])
         if active_topic and active_topic not in resolved_entities:
@@ -2647,20 +2675,32 @@ class CeaserOrchestrator:
             "continue": r"^(continue|go on|keep going|carry on|what else)(?:\s+please)?$|\bcontinue (?:from|with)\b|\b(?:response|answer|generation|it)\s+(?:stopped|was cut off|cut off|ended)\b|\b(?:finish|complete)\s+(?:it|the response|the answer)\b",
             "simplify": r"\b(explain|say|put).{0,20}\b(simple|simpler|plain)\b|\bin simple words\b|\bbriefly\b|\bshort version\b",
             "summarize": r"\b(summarize|summary|recap|tl;dr)\b",
-            "examples": r"\b(example|examples|illustrate|use case|use cases)\b",
+            "examples": r"\b(?:another|one more|more)?\s*(example|examples|illustrate|use case|use cases)\b",
             "history": r"\b(history|historical|origin|origins|background)\b",
             "why_how": r"^(why|how)(\s|$)|\b(why|how) (does|do|did|is|are|can|would)\b",
-            "expand": r"\b(?:explain(?: me)?|tell me|give me|go) (?:more|further|deeper|depth|detail|in depth|in detail|in detail please)\b|\b(elaborate|more details|more information|everything about)\b|^(more|details|depth|detail|in depth|in detail)$",
+            "expand": r"\b(?:explain(?: me)?|tell me|give me|go) (?:more|further|deeper|depth|detail|in depth|in detail|in detail please)\b|\b(elaborate|more details|more information|everything about|add one more|do the same|finish it|change that|what did you mean)\b|^(more|details|depth|detail|in depth|in detail)$",
         }
         intent = next((name for name, pattern in follow_up_patterns.items() if re.search(pattern, normalized)), None)
+        referential_follow_up = bool(
+            prior_topic
+            and (
+                intent
+                or re.search(
+                    r"\b(?:another|one more|first one|second one|previous one|which one|same for|study tomorrow|do tomorrow|what should i)\b",
+                    normalized,
+                )
+            )
+        )
+        if referential_follow_up:
+            explicit_topic = None
         # A request to resume a cut-off answer is a continuation even though
         # the generic topic extractor can turn its wording into a faux topic.
         if intent == "continue":
             explicit_topic = None
-        pronoun_reference = bool(re.search(r"\b(this|that|it|them|they|him|her|the previous answer|above)\b", normalized))
+        pronoun_reference = bool(re.search(r"\b(this|that|it|them|they|him|her|one|first one|second one|previous|the previous answer|above)\b", normalized))
         connector = bool(re.match(r"^(and|also|then|so)\b", normalized))
         is_short = len(normalized.split()) <= 7
-        vague_follow_up = bool(intent or pronoun_reference or connector)
+        vague_follow_up = bool(intent or pronoun_reference or connector or referential_follow_up)
 
         if explicit_subtopic and prior_topic:
             return {
@@ -2795,6 +2835,54 @@ class CeaserOrchestrator:
                 continue
             snippets.append(f"{item.role}: {content[:180]}")
         return " | ".join(snippets)[:900] if snippets else None
+
+    def _persist_conversation_state(
+        self,
+        *,
+        conversation: Conversation,
+        message: str,
+        response: str,
+        follow_up_trace: dict,
+        previous_state: dict,
+    ) -> None:
+        active_topic = follow_up_trace.get("active_topic") or previous_state.get("active_topic")
+        active_subtopic = follow_up_trace.get("active_subtopic") or previous_state.get("active_subtopic")
+        entities = list(dict.fromkeys([
+            *(follow_up_trace.get("resolved_entities") or []),
+            *(previous_state.get("important_entities") or []),
+        ]))[:8]
+        normalized = message.lower()
+        unfinished_goal = previous_state.get("unfinished_goal")
+        if any(term in normalized for term in ("plan", "build", "create", "learn", "study")):
+            unfinished_goal = message[:240]
+        if any(term in normalized for term in ("done", "finished", "complete the plan", "cancel")):
+            unfinished_goal = None
+        state = {
+            "active_topic": active_topic,
+            "active_subtopic": active_subtopic,
+            "active_task": message[:240],
+            "unfinished_goal": unfinished_goal,
+            "important_entities": entities,
+            "important_decisions": previous_state.get("important_decisions") or [],
+            "last_relevant_turn": message[:240],
+        }
+        summary_parts = [
+            f"Topic: {active_topic}" if active_topic else None,
+            f"Current task: {state['active_task']}",
+            f"Unfinished goal: {unfinished_goal}" if unfinished_goal else None,
+            f"Entities: {', '.join(entities)}" if entities else None,
+            f"Last response focus: {self._response_focus(response)}" if response else None,
+        ]
+        self.conversations.update_state(
+            conversation,
+            summary=" | ".join(part for part in summary_parts if part)[:1200],
+            state=state,
+        )
+
+    @staticmethod
+    def _response_focus(response: str) -> str:
+        plain = re.sub(r"[`*_#>\[\]]", " ", response)
+        return re.sub(r"\s+", " ", plain).strip()[:280]
 
     def _extract_entities(self, messages: list[dict]) -> list[str]:
         combined = " ".join(item.get("content", "") for item in messages)

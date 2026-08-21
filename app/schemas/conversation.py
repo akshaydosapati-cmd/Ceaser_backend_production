@@ -13,6 +13,9 @@ class ConversationRead(TimestampedModel):
     title: str
     pinned: bool = False
     archived: bool = False
+    conversation_summary: str | None = None
+    conversation_state: dict = Field(default_factory=dict)
+    summary_version: int = 1
 
 
 class ConversationUpdate(BaseModel):
