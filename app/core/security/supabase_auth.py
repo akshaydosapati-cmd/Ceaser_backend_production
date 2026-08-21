@@ -5,6 +5,7 @@ from app.core.config.settings import settings
 
 
 class SupabaseAuth:
+    _timeout = httpx.Timeout(8.0, connect=3.0, pool=3.0)
     @property
     def supabase_url(self) -> str | None:
         return settings.supabase_url
@@ -82,7 +83,7 @@ class SupabaseAuth:
     async def get_user(self, access_token: str) -> dict:
         if not self.configured:
             raise RuntimeError("Supabase Auth is not configured")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.get(
                 f"{self.supabase_url}/auth/v1/user",
                 headers={
@@ -96,7 +97,7 @@ class SupabaseAuth:
     async def _post(self, path: str, payload: dict, access_token: str | None = None) -> dict:
         if not self.configured:
             raise RuntimeError("Supabase Auth is not configured")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self.supabase_url}{path}",
                 json=payload,
@@ -108,7 +109,7 @@ class SupabaseAuth:
     async def _put(self, path: str, payload: dict, access_token: str | None = None) -> dict:
         if not self.configured:
             raise RuntimeError("Supabase Auth is not configured")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.put(
                 f"{self.supabase_url}{path}",
                 json=payload,
@@ -120,7 +121,7 @@ class SupabaseAuth:
     async def _get(self, path: str, access_token: str | None = None) -> dict:
         if not self.configured:
             raise RuntimeError("Supabase Auth is not configured")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.get(f"{self.supabase_url}{path}", headers=self._headers(access_token))
             response.raise_for_status()
             return response.json()
@@ -128,7 +129,7 @@ class SupabaseAuth:
     async def _delete(self, path: str, access_token: str | None = None) -> dict:
         if not self.configured:
             raise RuntimeError("Supabase Auth is not configured")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.delete(f"{self.supabase_url}{path}", headers=self._headers(access_token))
             response.raise_for_status()
             return response.json() if response.content else {"status": "ok"}

@@ -5,6 +5,7 @@ import logging
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
+import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config.settings import settings
@@ -83,6 +84,9 @@ async def get_current_user(
             logger.info("ceaser_auth_stage stage=supabase_remote duration_ms=%.2f", (monotonic() - remote_started) * 1000)
         else:
             logger.info("ceaser_auth_stage stage=supabase_cache_hit")
+    except httpx.RequestError as exc:
+        logger.warning("ceaser_auth_stage stage=supabase_unavailable error=%s", exc.__class__.__name__)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication service temporarily unavailable") from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session") from exc
 
